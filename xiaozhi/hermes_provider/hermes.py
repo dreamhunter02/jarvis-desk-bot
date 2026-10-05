@@ -61,48 +61,6 @@ TOOL_LINES = (
 )
 PROGRESS_LINES = {ACK, *STILL, *(line for _, line in TOOL_LINES if line)}
 NOT_CAUGHT = "Sorry, I didn't catch that."
-# Some models (DeepSeek V4.1 Flash) end a turn on an announcement of work they have not
-# started. Hermes's own stall guard only matches "let me now" / "I'll now" endings.
-MAX_NUDGES = 1
-NUDGE = "Do that now: use your tools in this same turn, then tell me the result."
-_PROMISE = re.compile(
-    r"\b(?:one moment|a moment|a sec(?:ond)?|hold on|bear with me|hang on"
-    r"|let me (?:check|verify|pull|look|see|read|get|grab|find|confirm|fetch|add|update|review)"
-    r"|i(?:'|\u2019)?ll (?:check|verify|pull|look|read|get|grab|find|confirm|fetch|add|update)"
-    r"|i will (?:check|verify|pull|look|read|get|grab|find|confirm|fetch|add|update)"
-    r"|(?:checking|pulling|reading|looking|fetching|getting|grabbing|verifying|adding|updating)\b[^.?!]{0,60}\bnow)\b",
-    re.IGNORECASE,
-)
-
-
-CLAIM_NUDGE = (
-    "You made no tool calls in that turn, so nothing was changed or checked. If your reply claimed "
-    "an action, a status or a fact you have not verified, do it now with your tools and report the "
-    "real result, or say plainly that you have not done or checked it. If it needed no tools, give "
-    "the same reply again."
-)
-# Replies that report an action or a live status. Said in a turn with no tool call, they are
-# usually invented ("Done: the window is extended to an hour", "still pulling weights").
-_CLAIM = re.compile(
-    r"(?:(?:^\W*|[.!?:;\u2014-]\s*|\b(?:it|that|this|all|they)(?:'s| is| are|\u2019s)?\s)done\b|\ball set"
-    r"|\bi(?:'|\u2019)?ve (?:\w+ed|set|sent|made|put|run|begun|started|kicked off)"
-    r"|\bi have (?:\w+ed|set|sent|made|started)"
-    r"|\b(?:(?:is|are|'s|'re) (?:now )?|still )(?:loading|pulling|downloading|deploying|installing|uploading)"
-    r"|\b(?:extended|updated|scheduled|cancell?ed|deleted|removed|created|renamed|moved|added|saved|sent|fixed) "
-    r"(?:it|that|them|the|your|its))\b",
-    re.IGNORECASE,
-)
-
-
-def is_unverified_claim(text: str) -> bool:
-    """A reply that reports doing or observing something (checked only for turns with no tool call)."""
-    return bool(_CLAIM.search(text or ""))
-
-
-def is_promise(text: str) -> bool:
-    """A short reply that only announces work ("Checking your lists now, one moment")."""
-    t = re.sub(r"[^\w\s'\u2019,.!?-]", "", text or "").strip()
-    return 0 < len(t) <= 200 and "?" not in t and bool(_PROMISE.search(t))
 # The voice is English-only; GLM sometimes drifts into Chinese on garbled input.
 CJK = re.compile(r"[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef]+")
 
@@ -234,34 +192,16 @@ class LLMProvider(OpenAIProvider):
         request = request if isinstance(request, str) else ""
         dialogue = with_background_note(dialogue)
         now = time.monotonic()
-        # Spoken-update state is shared across the (at most two) Hermes turns of one request.
+        # Spoken-update state for this request: ack, per-kind tool lines, "still working" lines.
         state = {"started": now, "last_spoken": now, "acked": False, "said": set(), "stills": 0}
-        for attempt in range(MAX_NUDGES + 1):
-            result = {"answer": "", "tools": 0, "failed": False, "held": ""}
-            yield from self._run(dialogue, request, state, result)
-            held = result["held"]  # the whole reply of a turn with no tool call, not yet spoken
-            if result["failed"] or result["tools"]:
-                return
-            # A turn with no tool call that only announces work ("one moment, checking your
-            # lists") or reports an action or live status ("Done", "still pulling the weights")
-            # is usually invented. It has not been spoken: ask Hermes to act or correct itself.
-            nudge = NUDGE if is_promise(held) else CLAIM_NUDGE if is_unverified_claim(held) else None
-            if nudge is None or attempt == MAX_NUDGES:
-                if held:
-                    yield held
-                return
-            logger.bind(tag=TAG).warning(f"Hermes replied without tools ({held!r}); nudging")
-            dialogue = dialogue + [
-                {"role": "assistant", "content": held},
-                {"role": "user", "content": nudge},
-            ]
+        result = {"answer": "", "tools": 0}
+        yield from self._run(dialogue, request, state, result)
 
     def _run(self, dialogue, request, state, result):
         """Stream one Hermes turn; record its answer text and tool count in ``result``."""
         out: queue.Queue = queue.Queue()
         threading.Thread(target=self._stream_events, args=(dialogue, out), daemon=True).start()
         answering = False
-        held = []  # reply text held back until a tool call shows it is a preamble, or the turn ends
         thinking = False  # inside <think>...</think>
         dropped_cjk = False
         prefix = ""
@@ -282,23 +222,14 @@ class LLMProvider(OpenAIProvider):
                 continue
             if kind == "done":
                 if value is not None:
-                    result["failed"] = True
                     logger.bind(tag=TAG).error(f"Hermes request failed: {value}")
-                    if held:
-                        yield "".join(held)
-                    elif not answering:
+                    if not answering:
                         yield "Sorry, I could not reach JARVIS just now."
                 elif not answering and dropped_cjk:
-                    result["failed"] = True
                     yield NOT_CAUGHT
-                else:
-                    result["held"] = "".join(held)
                 return
             if kind == "tool":
                 result["tools"] += 1
-                if held:  # it was a preamble ("I'll delegate that."): speak it now
-                    yield "".join(held)
-                    held.clear()
                 # Text before a tool call was a preamble ("I'll delegate that."), not the
                 # answer: keep the progress lines going until the real answer streams.
                 answering = False
@@ -332,10 +263,7 @@ class LLMProvider(OpenAIProvider):
                 answering = True
                 state["last_spoken"] = time.monotonic()
                 result["answer"] += text
-                if result["tools"]:
-                    yield text
-                else:
-                    held.append(text)
+                yield text
 
     def response(self, session_id, dialogue, **kwargs):
         yield from self._respond(dialogue)
