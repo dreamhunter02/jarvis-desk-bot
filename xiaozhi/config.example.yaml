@@ -20,3 +20,9 @@ LLM:
 TTS:
   KokoroTTS:
     language: English
+
+# Keep a conversation open until the user says an end phrase ("bye bye", "good bye",
+# "bye jarvis"): no sleep after silence, and no idle disconnect. Trade-off: the robot
+# keeps listening, so nearby speech (a meeting, a video) is sent to the agent too.
+listen_silence_timeout: 0                  # 0 = never sleep on silence (upstream default 120; was 10 here)
+close_connection_no_voice_time: 315360000  # effectively never; 0 would close at once
