@@ -24,6 +24,7 @@ Chinese, and often said it had done things it had not.
 | The same provider **drops CJK text** and says "Sorry, I didn't catch that." if nothing English is left | Given garbled input (background speech), the model sometimes answered in Chinese, which an English voice cannot speak |
 | Progress lines are **stripped from the history** sent back to Hermes | Otherwise the model sees its own filler lines as past answers |
 | **English full stops end a sentence** in the TTS splitter (`tts/base.py`; "3.5" is not split) | Upstream only splits on `? ! ; :` and CJK punctuation, so "Let me check." waited for the whole answer, and English answers were spoken only once complete |
+| **Wake and end chimes** (`sounds/`, installed by `apply.py`): a rising "ba-ding" when the wake word is heard, and a falling "tung" before an end phrase ("bye bye") puts the robot to sleep; the goodbye waits until the chime has played | With the greeting off there was no sound on wake, and the conversation ended silently |
 | **Thinking face stays up** during progress lines (optional; needs a `turnFeedback.on_spoken_sentence` hook) | The face switched to "speaking" at the first filler line |
 
 ### Robot firmware (`firmware/`)

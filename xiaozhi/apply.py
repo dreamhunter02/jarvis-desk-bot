@@ -12,6 +12,9 @@ Idempotent; every file it edits is backed up once as <file>.before-jarvis-desk-b
 3. Optional: if core/handle/turnFeedback.py has on_spoken_sentence (a custom
    thinking-face module), keeps the thinking face up during progress lines.
 4. Switches the configured LLM entry in data/.config.yaml to `type: hermes`.
+5. Installs the wake and end chimes (sounds/): a rising "ba-ding" when the wake word
+   is heard and a falling "tung" before an end phrase ("bye bye") puts the robot to
+   sleep. Each hook is skipped if that xiaozhi build lacks the matching handler.
 """
 
 import argparse
@@ -39,7 +42,7 @@ def install_provider(root: Path) -> None:
 def patch_full_stop(root: Path) -> None:
     path = root / "core/providers/tts/base.py"
     text = path.read_text(encoding="utf-8")
-    if "jarvis-desk-bot: English sentences" in text:
+    if "English sentences end in" in text:  # also matches an earlier hand-applied copy
         print("tts/base.py: already patched")
         return
     anchor = (
@@ -87,6 +90,57 @@ def patch_thinking_face(root: Path) -> None:
     print("turnFeedback.py: patched")
 
 
+def install_chimes(root: Path) -> None:
+    sounds = HERE / "sounds"
+    shutil.copy2(sounds / "chimes.py", root / "core/handle/chimes.py")
+    for name in ("wake_chime.wav", "end_chime.wav"):
+        shutil.copy2(sounds / name, root / "core/providers/tts" / name)
+    print("chimes: installed core/handle/chimes.py and two WAVs in core/providers/tts")
+
+    path = root / "core/handle/receiveAudioHandle.py"
+    text = path.read_text(encoding="utf-8")
+    anchor = (
+        "    if is_end_session(actual_text):\n"
+        "        await handleAbortMessage(conn)\n"
+        "        await stop_thinking(conn)\n"
+    )
+    if "play_chime(conn, \"end\")" in text:
+        print("receiveAudioHandle.py: end chime already patched")
+    elif text.count(anchor) != 1:
+        print("receiveAudioHandle.py: no local end-phrase handler (end chime skipped)")
+    else:
+        backup(path)
+        path.write_text(text.replace(anchor, anchor + (
+            "        # jarvis-desk-bot: falling \"tung\" before sleep; returns once it has played.\n"
+            "        from core.handle.chimes import play_chime\n"
+            "        await play_chime(conn, \"end\")\n"
+        )), encoding="utf-8")
+        print("receiveAudioHandle.py: end chime patched")
+
+    path = root / "core/handle/textHandler/listenMessageHandler.py"
+    text = path.read_text(encoding="utf-8")
+    anchor = (
+        "                    await send_stt_message(conn, original_text)\n"
+        "                    await send_tts_message(conn, \"stop\", None)\n"
+        "                    conn.client_is_speaking = False\n"
+    )
+    if "play_chime(conn, \"wake\")" in text:
+        print("listenMessageHandler.py: wake chime already patched")
+    elif text.count(anchor) != 1:
+        print("listenMessageHandler.py: wake-word branch not found (wake chime skipped)")
+    else:
+        backup(path)
+        path.write_text(text.replace(anchor, (
+            "                    await send_stt_message(conn, original_text)\n"
+            "                    # jarvis-desk-bot: rising \"ba-ding\" so the user knows the wake word was heard.\n"
+            "                    from core.handle.chimes import play_chime\n"
+            "                    if not await play_chime(conn, \"wake\"):\n"
+            "                        await send_tts_message(conn, \"stop\", None)\n"
+            "                    conn.client_is_speaking = False\n"
+        )), encoding="utf-8")
+        print("listenMessageHandler.py: wake chime patched")
+
+
 def switch_config(root: Path, llm: str) -> None:
     path = root / "data/.config.yaml"
     text = path.read_text(encoding="utf-8")
@@ -109,6 +163,7 @@ def main() -> None:
     patch_full_stop(root)
     patch_thinking_face(root)
     switch_config(root, args.llm)
+    install_chimes(root)
     print("Restart xiaozhi-server to apply.")
 
 
