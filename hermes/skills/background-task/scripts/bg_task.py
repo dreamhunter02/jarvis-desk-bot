@@ -10,7 +10,10 @@
 (`hermes chat --oneshot`) with the subagent model from ~/.hermes/config.yaml
 (delegation.model / delegation.provider), saves the full answer, and announces a
 one-sentence summary through the speech command (the robot's speech outbox).
-Each record (JOB_ID.json) keeps the status, timings, full answer and spoken summary;
+While it runs, the worker appends one line per helper step (each tool call, failed
+tool, and any note the helper writes between tools) to JOB_ID.progress, and keeps the
+latest step in the record. Each record (JOB_ID.json) keeps the status, timings, step
+count, latest step, full answer and spoken summary;
 `mentioned` is set once the result has been shown to the main agent, so a client can
 feed newly finished jobs back into the conversation (see the xiaozhi provider).
 
@@ -29,6 +32,7 @@ import re
 import shlex
 import shutil
 import signal
+import threading
 import subprocess
 import sys
 import time
@@ -163,12 +167,72 @@ def cmd_start(args) -> None:
     print(f"started {job['id']}: {job['title']}")
 
 
+def _preview(value, limit: int = 140) -> str:
+    """One line from a tool input: the command, query or first string argument."""
+    if isinstance(value, dict):
+        for key in ("command", "query", "goal", "url", "path", "name"):
+            if isinstance(value.get(key), str):
+                value = value[key]
+                break
+        else:
+            value = next((v for v in value.values() if isinstance(v, str)), json.dumps(value))
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+class Progress:
+    """Append helper steps to JOB_ID.progress and keep the latest one in the job record."""
+
+    def __init__(self, job: dict):
+        self.job = job
+        self.path = JOBS / f"{job['id']}.progress"
+        self.note = ""
+        self.saved_at = 0.0
+
+    def add(self, line: str) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        with self.path.open("a") as f:
+            f.write(f"{stamp} {line}\n")
+        self.job["steps"] = self.job.get("steps", 0) + 1
+        self.job["last_step"] = line
+        self.job["last_step_ts"] = time.time()
+        if time.time() - self.saved_at > 5:  # the record is read by other processes; keep writes light
+            self.save()
+
+    def save(self) -> None:
+        current = _load(self.job["id"])
+        if current.get("status") == "cancelled":
+            return
+        for key in ("steps", "last_step", "last_step_ts"):
+            if key in self.job:
+                current[key] = self.job[key]
+        _save(current)
+        self.saved_at = time.time()
+
+    def event(self, event: dict) -> str | None:
+        """Log one stream-json event; return the final answer on the result event."""
+        kind = event.get("type")
+        if kind == "text":
+            self.note += event.get("text", "")
+        elif kind == "tool_use":
+            note = " ".join(self.note.split())
+            if note:
+                self.add(f"note: {_preview(note, 200)}")
+            self.note = ""
+            self.add(f"{event.get('name')}: {_preview(event.get('input'))}")
+        elif kind == "tool_result" and event.get("is_error"):
+            self.add(f"{event.get('name')} failed: {_preview(event.get('output'))}")
+        elif kind == "result":
+            return event.get("text") or ""
+        return None
+
+
 def cmd_run(args) -> None:
     job = _load(args.job_id)
     job["pid"] = os.getpid()
     _save(job)
     model, provider = _subagent_model()
-    command = [_hermes(), "chat", "-Q", "--oneshot", "--source", "background",
+    command = [_hermes(), "chat", "--oneshot", "--format", "stream-json", "--source", "background",
                "--max-turns", "40", "--run-budget", str(BUDGET_S),
                "-q", f"{INSTRUCTIONS}\n\nJob: {job['goal']}"]
     if model:
@@ -176,20 +240,42 @@ def cmd_run(args) -> None:
     if provider:
         command += ["--provider", provider]
     started = time.monotonic()
+    progress = Progress(job)
+    progress.add("started")
     try:
-        done = subprocess.run(command, capture_output=True, text=True, timeout=BUDGET_S + 120)
-        answer = done.stdout.strip()
-        if done.returncode != 0 or not answer:
-            raise RuntimeError((done.stderr or "no output").strip().splitlines()[-1][:200])
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        killer = threading.Timer(BUDGET_S + 120, proc.kill)  # hard stop if the budget is ignored
+        killer.start()
+        answer = None
+        try:
+            for line in proc.stdout:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                result = progress.event(event)
+                if result is not None:
+                    answer = result.strip()
+            proc.wait()
+        finally:
+            killer.cancel()
+        progress.save()
+        if proc.returncode != 0 or not answer:
+            err = (proc.stderr.read() or "no answer").strip().splitlines()
+            raise RuntimeError((err[-1] if err else "no answer")[:200])
         spoken = _spoken_summary(answer, job["title"])
         if _load(job["id"]).get("status") == "cancelled":
             return
+        job = _load(job["id"])
         job.update(status="done", answer=answer, spoken=spoken, seconds=round(time.monotonic() - started))
         _save(job)
+        progress.add("finished")
         _announce(spoken)
     except Exception as exc:
         if _load(job["id"]).get("status") == "cancelled":
             return
+        progress.add(f"stopped: {exc}"[:200])
+        job = _load(job["id"])
         spoken = f"Your helper could not finish {job['title']}."
         job.update(status="failed", error=str(exc)[:300], spoken=spoken, seconds=round(time.monotonic() - started))
         _save(job)
@@ -203,7 +289,11 @@ def cmd_list(_args) -> None:
     for job in jobs[-15:]:
         took = _elapsed(job)
         took = f" ({'for ' if job['status'] == 'running' else ''}{took})" if took else ""
-        print(f"{job['id']} | {job['status']}{took} | {job['title']}")
+        latest = ""
+        if job["status"] == "running" and job.get("last_step"):
+            ago = round(time.time() - job.get("last_step_ts", time.time()))
+            latest = f" | {job.get('steps', 0)} steps, latest {ago} s ago: {job['last_step']}"
+        print(f"{job['id']} | {job['status']}{took} | {job['title']}{latest}")
 
 
 def cmd_cancel(args) -> None:
@@ -222,8 +312,14 @@ def cmd_cancel(args) -> None:
 
 def cmd_show(args) -> None:
     job = _load(args.job_id)
-    print(f"{job['title']} [{job['status']}] started {job['started']}")
+    log = JOBS / f"{job['id']}.progress"
+    steps = log.read_text().splitlines() if log.exists() else []
+    print(f"{job['title']} [{job['status']}] started {job['started']}, {len(steps)} steps logged")
     print(f"goal: {job['goal']}")
+    if steps:
+        print("recent steps:")
+        for step in steps[-args.steps:]:
+            print(f"  {step}")
     if job.get("answer"):
         print(job["answer"])
     if job.get("error"):
@@ -239,6 +335,7 @@ def main() -> None:
     sub.add_parser("list")
     show = sub.add_parser("show")
     show.add_argument("job_id")
+    show.add_argument("--steps", type=int, default=12, help="how many recent steps to print")
     cancel = sub.add_parser("cancel")
     cancel.add_argument("job_id")
     run = sub.add_parser("_run")  # internal: the detached worker

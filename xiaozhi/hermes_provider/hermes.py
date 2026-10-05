@@ -93,7 +93,11 @@ def background_note() -> str:
         status = job.get("status")
         if status == "running":
             minutes = max(1, round((time.time() - job.get("started_ts", time.time())) / 60))
-            running.append(f"{job.get('title')} ({job.get('id')}, {minutes} min so far)")
+            latest = ""
+            if job.get("last_step"):
+                ago = round(time.time() - job.get("last_step_ts", time.time()))
+                latest = f"; {job.get('steps', 0)} steps, latest {ago} s ago: {job['last_step'][:160]}"
+            running.append(f"{job.get('title')} ({job.get('id')}, {minutes} min so far{latest})")
         elif status in ("done", "failed") and not job.get("mentioned"):
             finished.append(f"{job.get('title')} ({job.get('id')}, {status}): {job.get('spoken') or job.get('error') or ''}")
             job["mentioned"] = True
@@ -107,8 +111,8 @@ def background_note() -> str:
         return ""
     parts = []
     if running:
-        parts.append("running (status only: you do not know their progress; run `show JOB_ID` before "
-                     "describing it): " + "; ".join(running))
+        parts.append("running (you know only the latest step shown; for more, run `show JOB_ID`, which "
+                     "lists the recent steps): " + " | ".join(running))
     if finished:
         parts.append("finished since last turn (already announced aloud): " + "; ".join(finished))
     return ("\n\n[Background jobs, for your awareness; mention only if relevant or asked. Full results: "

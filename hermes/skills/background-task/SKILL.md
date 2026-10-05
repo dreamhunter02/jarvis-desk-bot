@@ -32,12 +32,18 @@ python3 ~/.hermes/skills/background-task/scripts/bg_task.py cancel JOB_ID
 
 ## Knowing what is running
 
+Every helper step is logged automatically: each tool call, each failed tool, and any
+note the helper writes between tools. You never ask the helper for updates.
+
 On the robot, each user message ends with a bracketed `[Background jobs ...]` note:
-the jobs still running (with minutes so far) and any that finished since the last
-turn, with their one-sentence result. Use it to answer "what's running?" or "how is
-the benchmark going?" without a tool call, and to connect a follow-up ("tell me more
-about that") to the right job. Do not read the note aloud unprompted; the results were
-already announced. For the full result run `show JOB_ID`; to stop a job run
-`cancel JOB_ID` and confirm in one sentence. Elsewhere, `list` gives the same status.
+each running job with its minutes so far, step count and latest step ("latest 40 s ago:
+terminal: huggingface-cli download ..."), and any job that finished since the last turn
+with its one-sentence result. Use it to answer "what's running?" or "how is the
+benchmark going?" without a tool call: describe the latest step in plain words, and say
+if it has been quiet for a long time. For more detail run `show JOB_ID`, which lists the
+recent steps (`--steps N` for more) and the full result once done; elsewhere, `list`
+shows the latest step of each running job. Do not read the note aloud unprompted; the
+results were already announced. To stop a job run `cancel JOB_ID` and confirm in one
+sentence.
 
 Several jobs can run at once (three by default); `start` says "busy" at the limit.
