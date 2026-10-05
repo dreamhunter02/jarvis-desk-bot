@@ -4,11 +4,15 @@
     bg_task.py start --title "Benchmark analysis" --goal "..."   # returns at once
     bg_task.py list                                              # running and finished jobs
     bg_task.py show JOB_ID                                       # full result of one job
+    bg_task.py cancel JOB_ID                                     # stop a running job
 
 `start` detaches a worker and prints the job id. The worker runs one Hermes query
 (`hermes chat --oneshot`) with the subagent model from ~/.hermes/config.yaml
 (delegation.model / delegation.provider), saves the full answer, and announces a
 one-sentence summary through the speech command (the robot's speech outbox).
+Each record (JOB_ID.json) keeps the status, timings, full answer and spoken summary;
+`mentioned` is set once the result has been shown to the main agent, so a client can
+feed newly finished jobs back into the conversation (see the xiaozhi provider).
 
 Environment:
     BG_TASK_DIR          job records (default ~/.hermes/background)
@@ -24,6 +28,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -100,6 +105,15 @@ def _jobs() -> list[dict]:
     return jobs
 
 
+def _elapsed(job: dict) -> str:
+    seconds = job.get("seconds")
+    if seconds is None and job.get("started_ts"):
+        seconds = time.time() - job["started_ts"]
+    if seconds is None:
+        return ""
+    return f"{round(seconds)} s" if seconds < 90 else f"{round(seconds / 60)} min"
+
+
 def _announce(text: str) -> None:
     command = shlex.split(os.environ.get("BG_ANNOUNCE_CMD", DEFAULT_ANNOUNCE)) + [text[:SPOKEN_LIMIT]]
     try:
@@ -127,6 +141,7 @@ def cmd_start(args) -> None:
         "goal": args.goal.strip(),
         "status": "running",
         "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "started_ts": time.time(),
     }
     _save(job)
     log = open(JOBS / f"{job['id']}.log", "ab")
@@ -158,13 +173,19 @@ def cmd_run(args) -> None:
         answer = done.stdout.strip()
         if done.returncode != 0 or not answer:
             raise RuntimeError((done.stderr or "no output").strip().splitlines()[-1][:200])
-        job.update(status="done", answer=answer, seconds=round(time.monotonic() - started))
+        spoken = _spoken_summary(answer, job["title"])
+        if _load(job["id"]).get("status") == "cancelled":
+            return
+        job.update(status="done", answer=answer, spoken=spoken, seconds=round(time.monotonic() - started))
         _save(job)
-        _announce(_spoken_summary(answer, job["title"]))
+        _announce(spoken)
     except Exception as exc:
-        job.update(status="failed", error=str(exc)[:300], seconds=round(time.monotonic() - started))
+        if _load(job["id"]).get("status") == "cancelled":
+            return
+        spoken = f"Your helper could not finish {job['title']}."
+        job.update(status="failed", error=str(exc)[:300], spoken=spoken, seconds=round(time.monotonic() - started))
         _save(job)
-        _announce(f"Your helper could not finish {job['title']}.")
+        _announce(spoken)
 
 
 def cmd_list(_args) -> None:
@@ -172,8 +193,23 @@ def cmd_list(_args) -> None:
     if not jobs:
         print("no background jobs")
     for job in jobs[-15:]:
-        took = f" ({job['seconds']} s)" if "seconds" in job else ""
+        took = _elapsed(job)
+        took = f" ({'for ' if job['status'] == 'running' else ''}{took})" if took else ""
         print(f"{job['id']} | {job['status']}{took} | {job['title']}")
+
+
+def cmd_cancel(args) -> None:
+    job = _load(args.job_id)
+    if job.get("status") != "running":
+        print(f"{job['id']} is already {job.get('status')}")
+        return
+    job.update(status="cancelled", seconds=round(time.time() - job.get("started_ts", time.time())), mentioned=True)
+    _save(job)
+    try:
+        os.killpg(job["pid"], signal.SIGTERM)  # the worker leads its own session: stops hermes too
+    except (OSError, KeyError):
+        pass
+    print(f"cancelled {job['id']}: {job['title']}")
 
 
 def cmd_show(args) -> None:
@@ -195,10 +231,12 @@ def main() -> None:
     sub.add_parser("list")
     show = sub.add_parser("show")
     show.add_argument("job_id")
+    cancel = sub.add_parser("cancel")
+    cancel.add_argument("job_id")
     run = sub.add_parser("_run")  # internal: the detached worker
     run.add_argument("job_id")
     args = parser.parse_args()
-    {"start": cmd_start, "_run": cmd_run, "list": cmd_list, "show": cmd_show}[args.cmd](args)
+    {"start": cmd_start, "_run": cmd_run, "list": cmd_list, "show": cmd_show, "cancel": cmd_cancel}[args.cmd](args)
 
 
 if __name__ == "__main__":

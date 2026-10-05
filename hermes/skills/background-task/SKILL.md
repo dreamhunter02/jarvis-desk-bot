@@ -16,6 +16,7 @@ Script: `~/.hermes/skills/background-task/scripts/bg_task.py` (via the `terminal
 python3 ~/.hermes/skills/background-task/scripts/bg_task.py start --title "TITLE" --goal "GOAL"
 python3 ~/.hermes/skills/background-task/scripts/bg_task.py list
 python3 ~/.hermes/skills/background-task/scripts/bg_task.py show JOB_ID
+python3 ~/.hermes/skills/background-task/scripts/bg_task.py cancel JOB_ID
 ```
 
 1. Write a self-contained goal: the helper starts with no memory of this
@@ -28,7 +29,15 @@ python3 ~/.hermes/skills/background-task/scripts/bg_task.py show JOB_ID
    e.g. "🙂 I've handed the benchmark analysis to a helper; I'll tell you when it's done."
    Do not wait for it, poll it, or start it twice.
 5. When it finishes, a one-sentence summary is announced on the robot automatically.
-   If the user later asks what the helper found, run `list`, then `show JOB_ID`, and
-   answer from the saved result.
 
-At most three jobs run at once; `start` says "busy" when that limit is reached.
+## Knowing what is running
+
+On the robot, each user message ends with a bracketed `[Background jobs ...]` note:
+the jobs still running (with minutes so far) and any that finished since the last
+turn, with their one-sentence result. Use it to answer "what's running?" or "how is
+the benchmark going?" without a tool call, and to connect a follow-up ("tell me more
+about that") to the right job. Do not read the note aloud unprompted; the results were
+already announced. For the full result run `show JOB_ID`; to stop a job run
+`cancel JOB_ID` and confirm in one sentence. Elsewhere, `list` gives the same status.
+
+Several jobs can run at once (three by default); `start` says "busy" at the limit.

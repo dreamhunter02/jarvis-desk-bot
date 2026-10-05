@@ -20,10 +20,13 @@ back to Hermes. Config (data/.config.yaml, LLM.HermesLLM):
 """
 
 import json
+import os
 import queue
 import re
 import threading
 import time
+
+from pathlib import Path
 
 import httpx
 
@@ -41,7 +44,8 @@ MAX_STILL = 6  # enough for a ~2 minute subagent run
 # preview never names them. ASR often hears "Plane" as "plain" or "plan".
 TOOL_LINES = (
     # Delegation first: a subagent's goal text often mentions tasks or the web.
-    (r"bg_task|background-task", "Starting a helper."),
+    (r"bg_task\.py (?:list|show|cancel)", "Checking on your helpers."),
+    (r"bg_task\.py start", "Starting a helper."),
     (r"delegate_task|subagent", "Handing part of this to a helper."),
     (r"\bplane\b|\bplain\b|\bplan\b|\btasks?\b|to-?dos?", "Checking your tasks."),
     (r"obsidian|vault|\bnotes?\b", "Looking through your notes."),
@@ -82,6 +86,55 @@ def spoken_line(request: str, tool: str, label: str) -> str | None:
         if re.search(pattern, text):
             return line
     return None
+
+
+BACKGROUND_DIR = Path(os.environ.get("BG_TASK_DIR", Path.home() / ".hermes/background"))
+
+
+def background_note() -> str:
+    """Status of background-task jobs for the agent: what is running, and what finished
+    since the last turn (each finished job is reported once, then marked mentioned)."""
+    if not BACKGROUND_DIR.is_dir():
+        return ""
+    running, finished = [], []
+    for path in sorted(BACKGROUND_DIR.glob("*.json")):
+        try:
+            job = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        status = job.get("status")
+        if status == "running":
+            minutes = max(1, round((time.time() - job.get("started_ts", time.time())) / 60))
+            running.append(f"{job.get('title')} ({job.get('id')}, {minutes} min so far)")
+        elif status in ("done", "failed") and not job.get("mentioned"):
+            finished.append(f"{job.get('title')} ({job.get('id')}, {status}): {job.get('spoken') or job.get('error') or ''}")
+            job["mentioned"] = True
+            try:
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(job, indent=1))
+                tmp.replace(path)
+            except OSError:
+                pass
+    if not running and not finished:
+        return ""
+    parts = []
+    if running:
+        parts.append("running: " + "; ".join(running))
+    if finished:
+        parts.append("finished since last turn (already announced aloud): " + "; ".join(finished))
+    return ("\n\n[Background jobs, for your awareness; mention only if relevant or asked. Full results: "
+            "background-task show JOB_ID. " + " | ".join(parts) + "]")
+
+
+def with_background_note(dialogue: list) -> list:
+    """Attach the background-job status to the outgoing copy of the latest user message."""
+    note = background_note()
+    if not note:
+        return dialogue
+    for i in range(len(dialogue) - 1, -1, -1):
+        if dialogue[i].get("role") == "user" and isinstance(dialogue[i].get("content"), str):
+            return dialogue[:i] + [{**dialogue[i], "content": dialogue[i]["content"] + note}] + dialogue[i + 1:]
+    return dialogue
 
 
 def strip_progress(dialogue: list) -> list:
@@ -149,6 +202,7 @@ class LLMProvider(OpenAIProvider):
         dialogue = strip_progress(self.normalize_dialogue(dialogue))
         request = next((m.get("content") for m in reversed(dialogue) if m.get("role") == "user"), "")
         request = request if isinstance(request, str) else ""
+        dialogue = with_background_note(dialogue)
         now = time.monotonic()
         # Spoken-update state is shared across the (at most two) Hermes turns of one request.
         state = {"started": now, "last_spoken": now, "acked": False, "said": set(), "stills": 0}
