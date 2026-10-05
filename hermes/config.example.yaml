@@ -28,7 +28,7 @@ agent:
 # listing off, a deferred tool is invisible and the agent says it cannot delegate.
 delegation:
   max_iterations: 30
-  model: zai-org/GLM-5.3-Flash
+  model: XiaomiMiMo/MiMo-V2.6-Flash   # 3-6 s per step; GLM-5.3-Flash took 31-41 s on DeepInfra
   provider: deepinfra
   base_url: https://api.deepinfra.com/v1/openai
   api_mode: chat_completions
