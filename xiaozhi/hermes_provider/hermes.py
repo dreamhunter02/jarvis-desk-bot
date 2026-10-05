@@ -43,6 +43,9 @@ MAX_STILL = 6  # enough for a ~2 minute subagent run
 # The request matters: Plane and notes go through a generic skill script whose
 # preview never names them. ASR often hears "Plane" as "plain" or "plan".
 TOOL_LINES = (
+    # Loading the background-task skill says nothing (its name would match "tasks");
+    # the start/list/cancel commands below get their own lines.
+    (r"skill_view\s+\S*background-task", None),
     # Delegation first: a subagent's goal text often mentions tasks or the web.
     (r"bg_task\.py (?:list|show|cancel)", "Checking on your helpers."),
     (r"bg_task\.py start", "Starting a helper."),
@@ -56,7 +59,7 @@ TOOL_LINES = (
     (r"memory|session_search", "Checking what I remember."),
     (r"read_file|search_files|write_file|patch", "Going through the files."),
 )
-PROGRESS_LINES = {ACK, *STILL, *(line for _, line in TOOL_LINES)}
+PROGRESS_LINES = {ACK, *STILL, *(line for _, line in TOOL_LINES if line)}
 NOT_CAUGHT = "Sorry, I didn't catch that."
 # Some models (DeepSeek V4.1 Flash) end a turn on an announcement of work they have not
 # started. Hermes's own stall guard only matches "let me now" / "I'll now" endings.
@@ -81,6 +84,8 @@ CJK = re.compile(r"[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\
 
 
 def spoken_line(request: str, tool: str, label: str) -> str | None:
+    if re.search(TOOL_LINES[0][0], f"{tool} {label}", re.I):
+        return None
     text = f"{request} {tool} {label}".casefold()
     for pattern, line in TOOL_LINES:
         if re.search(pattern, text):
