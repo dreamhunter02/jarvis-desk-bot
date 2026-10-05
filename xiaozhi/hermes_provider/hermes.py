@@ -52,6 +52,24 @@ TOOL_LINES = (
 )
 PROGRESS_LINES = {ACK, *STILL, *(line for _, line in TOOL_LINES)}
 NOT_CAUGHT = "Sorry, I didn't catch that."
+# Some models (DeepSeek V4.1 Flash) end a turn on an announcement of work they have not
+# started. Hermes's own stall guard only matches "let me now" / "I'll now" endings.
+MAX_NUDGES = 1
+NUDGE = "Do that now: use your tools in this same turn, then tell me the result."
+_PROMISE = re.compile(
+    r"\b(?:one moment|a moment|a sec(?:ond)?|hold on|bear with me|hang on"
+    r"|let me (?:check|verify|pull|look|see|read|get|grab|find|confirm|fetch|add|update|review)"
+    r"|i(?:'|\u2019)?ll (?:check|verify|pull|look|read|get|grab|find|confirm|fetch|add|update)"
+    r"|i will (?:check|verify|pull|look|read|get|grab|find|confirm|fetch|add|update)"
+    r"|(?:checking|pulling|reading|looking|fetching|getting|grabbing|verifying|adding|updating)\b[^.?!]{0,60}\bnow)\b",
+    re.IGNORECASE,
+)
+
+
+def is_promise(text: str) -> bool:
+    """A short reply that only announces work ("Checking your lists now, one moment")."""
+    t = re.sub(r"[^\w\s'\u2019,.!?-]", "", text or "").strip()
+    return 0 < len(t) <= 200 and "?" not in t and bool(_PROMISE.search(t))
 # The voice is English-only; GLM sometimes drifts into Chinese on garbled input.
 CJK = re.compile(r"[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uff00-\uffef]+")
 
@@ -127,17 +145,33 @@ class LLMProvider(OpenAIProvider):
 
     def _respond(self, dialogue):
         dialogue = strip_progress(self.normalize_dialogue(dialogue))
+        request = next((m.get("content") for m in reversed(dialogue) if m.get("role") == "user"), "")
+        request = request if isinstance(request, str) else ""
+        now = time.monotonic()
+        # Spoken-update state is shared across the (at most two) Hermes turns of one request.
+        state = {"started": now, "last_spoken": now, "acked": False, "said": set(), "stills": 0}
+        for attempt in range(MAX_NUDGES + 1):
+            result = {"answer": "", "tools": 0, "failed": False}
+            yield from self._run(dialogue, request, state, result)
+            if result["failed"] or result["tools"] or attempt == MAX_NUDGES or not is_promise(result["answer"]):
+                return
+            # The model announced the work ("one moment, checking your lists") and ended its turn
+            # without a tool call. The robot cannot wait for a second message: ask for it now.
+            logger.bind(tag=TAG).warning(f"Hermes stopped on a promise ({result['answer']!r}); nudging")
+            dialogue = dialogue + [
+                {"role": "assistant", "content": result["answer"]},
+                {"role": "user", "content": NUDGE},
+            ]
+            yield " "
+
+    def _run(self, dialogue, request, state, result):
+        """Stream one Hermes turn; record its answer text and tool count in ``result``."""
         out: queue.Queue = queue.Queue()
         threading.Thread(target=self._stream_events, args=(dialogue, out), daemon=True).start()
-        started = last_spoken = time.monotonic()
-        answering = acked = False
-        said = set()
-        stills = 0
+        answering = False
         thinking = False  # inside <think>...</think>
         dropped_cjk = False
         prefix = ""
-        request = next((m.get("content") for m in reversed(dialogue) if m.get("role") == "user"), "")
-        request = request if isinstance(request, str) else ""
         while True:
             try:
                 kind, value = out.get(timeout=0.25)
@@ -145,30 +179,33 @@ class LLMProvider(OpenAIProvider):
                 if not self.progress or answering:
                     continue
                 now = time.monotonic()
-                if not acked and now - started >= self.ack_after_s:
-                    acked, last_spoken = True, now
+                if not state["acked"] and now - state["started"] >= self.ack_after_s:
+                    state["acked"], state["last_spoken"] = True, now
                     yield ACK + " "
-                elif acked and stills < MAX_STILL and now - last_spoken >= self.still_after_s:
-                    last_spoken = now
-                    yield STILL[stills % len(STILL)] + " "
-                    stills += 1
+                elif state["acked"] and state["stills"] < MAX_STILL and now - state["last_spoken"] >= self.still_after_s:
+                    state["last_spoken"] = now
+                    yield STILL[state["stills"] % len(STILL)] + " "
+                    state["stills"] += 1
                 continue
             if kind == "done":
                 if value is not None:
+                    result["failed"] = True
                     logger.bind(tag=TAG).error(f"Hermes request failed: {value}")
                     if not answering:
                         yield "Sorry, I could not reach JARVIS just now."
                 elif not answering and dropped_cjk:
+                    result["failed"] = True
                     yield NOT_CAUGHT
                 return
             if kind == "tool":
+                result["tools"] += 1
                 if not self.progress or answering:
                     continue
                 line = spoken_line(request, *value)
                 logger.bind(tag=TAG).info(f"Hermes tool: {value[0]} {value[1]!r} -> {line}")
-                if line and line not in said:
-                    said.add(line)
-                    acked, last_spoken = True, time.monotonic()
+                if line and line not in state["said"]:
+                    state["said"].add(line)
+                    state["acked"], state["last_spoken"] = True, time.monotonic()
                     yield line + " "
                 continue
             text = value
@@ -190,6 +227,7 @@ class LLMProvider(OpenAIProvider):
                 if not answering:
                     text, prefix = prefix + text, ""
                 answering = True
+                result["answer"] += text
                 yield text
 
     def response(self, session_id, dialogue, **kwargs):
