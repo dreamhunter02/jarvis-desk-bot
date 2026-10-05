@@ -23,3 +23,12 @@ agent:
   tool_use_enforcement: auto
   execution_guidance: auto
   task_completion_guidance: true
+
+# Subagents (delegate_task). Keep delegate_task OUT of tools.tool_search.defer: with
+# listing off, a deferred tool is invisible and the agent says it cannot delegate.
+delegation:
+  max_iterations: 30
+  model: zai-org/GLM-5.3-Flash
+  provider: deepinfra
+  base_url: https://api.deepinfra.com/v1/openai
+  api_mode: chat_completions
