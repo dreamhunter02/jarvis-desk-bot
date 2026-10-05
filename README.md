@@ -22,6 +22,7 @@ Chinese, and often said it had done things it had not.
 |---|---|
 | **Hermes progress provider** (`hermes_provider/hermes.py`): reads Hermes's streamed `hermes.tool.progress` events and speaks short updates: "Let me check." after 3 s, a line for the kind of work ("Checking your tasks.", "Searching the web.", "Looking through your notes."), and "Still working on it." after 20 s of silence | The stock OpenAI provider only yields the final answer, so the robot gave no feedback while the agent worked |
 | The same provider **auto-continues a promise-only turn**: if Hermes ends a turn with no tool call and a reply that only announces work ("Checking your lists now, one moment"), it sends one follow-up, "Do that now…" | DeepSeek sometimes ends turns on an announcement; Hermes's stall guard only matches "let me now" / "I'll now" endings, and the robot cannot wait for a second message |
+| The same provider **holds a reply that used no tools** until it is complete, and if it reports an action or a live status ("Done: extended to an hour", "still pulling the weights") it is not spoken: Hermes is told no tool was called and must act or correct itself | DeepSeek answered fast by inventing results: claimed jobs were loading, described progress it had not checked, and confirmed changes it never made |
 | The same provider **drops CJK text** and says "Sorry, I didn't catch that." if nothing English is left | Given garbled input (background speech), the model sometimes answered in Chinese, which an English voice cannot speak |
 | Progress lines are **stripped from the history** sent back to Hermes | Otherwise the model sees its own filler lines as past answers |
 | **English full stops end a sentence** in the TTS splitter (`tts/base.py`; "3.5" is not split) | Upstream only splits on `? ! ; :` and CJK punctuation, so "Let me check." waited for the whole answer, and English answers were spoken only once complete |
@@ -38,6 +39,7 @@ Chinese, and often said it had done things it had not.
 | Change | Problem it fixes |
 |---|---|
 | **Main model DeepSeek V4.1 Flash, fallback GLM 5.3 Flash** (both on DeepInfra) | GLM 5.3 Flash took 17–49 s per agent step on DeepInfra (17.9 s for a 21-token "hello") and returned 429 "Model busy"; DeepSeek takes 0.7–1.7 s |
+| **DeepSeek reasoning `low`** (`agent.reasoning_overrides`) | With reasoning off it answered without a moment to check itself; `low` costs about 60 thinking tokens and no measurable latency on DeepInfra |
 | **Tool-use guards on**: `tool_use_enforcement: auto`, `execution_guidance: auto`, `task_completion_guidance: true` | With them off, DeepSeek ended turns with a promise ("give me a moment to pull them together") and no tool call, and claimed tasks were added without adding them |
 | **"Always reply in English"** on its own line in `SOUL.md` | "English only" buried at the end of a long line was ignored on garbled input |
 | **Google Tasks is the only task system** (`SOUL.md`, `task-manager` skill, `tasks-reminders` skill) | Every prompt still pointed at a removed task server, so the agent kept trying it and reported it unreachable |

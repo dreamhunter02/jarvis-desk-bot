@@ -16,6 +16,7 @@ fallback_providers:
 agent:
   reasoning_effort: none
   reasoning_overrides:
+    deepseek-ai/DeepSeek-V4.1-Flash: low   # none made it answer before checking
     zai-org/GLM-5.3-Flash: low
   # Keep these ON for DeepSeek and GLM. With them off, DeepSeek ends turns with a promise
   # ("give me a moment to pull them together") and no tool call, and claims tasks were added

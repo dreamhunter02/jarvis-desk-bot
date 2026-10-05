@@ -75,6 +75,30 @@ _PROMISE = re.compile(
 )
 
 
+CLAIM_NUDGE = (
+    "You made no tool calls in that turn, so nothing was changed or checked. If your reply claimed "
+    "an action, a status or a fact you have not verified, do it now with your tools and report the "
+    "real result, or say plainly that you have not done or checked it. If it needed no tools, give "
+    "the same reply again."
+)
+# Replies that report an action or a live status. Said in a turn with no tool call, they are
+# usually invented ("Done: the window is extended to an hour", "still pulling weights").
+_CLAIM = re.compile(
+    r"(?:(?:^\W*|[.!?:;\u2014-]\s*|\b(?:it|that|this|all|they)(?:'s| is| are|\u2019s)?\s)done\b|\ball set"
+    r"|\bi(?:'|\u2019)?ve (?:\w+ed|set|sent|made|put|run|begun|started|kicked off)"
+    r"|\bi have (?:\w+ed|set|sent|made|started)"
+    r"|\b(?:(?:is|are|'s|'re) (?:now )?|still )(?:loading|pulling|downloading|deploying|installing|uploading)"
+    r"|\b(?:extended|updated|scheduled|cancell?ed|deleted|removed|created|renamed|moved|added|saved|sent|fixed) "
+    r"(?:it|that|them|the|your|its))\b",
+    re.IGNORECASE,
+)
+
+
+def is_unverified_claim(text: str) -> bool:
+    """A reply that reports doing or observing something (checked only for turns with no tool call)."""
+    return bool(_CLAIM.search(text or ""))
+
+
 def is_promise(text: str) -> bool:
     """A short reply that only announces work ("Checking your lists now, one moment")."""
     t = re.sub(r"[^\w\s'\u2019,.!?-]", "", text or "").strip()
@@ -124,7 +148,8 @@ def background_note() -> str:
         return ""
     parts = []
     if running:
-        parts.append("running: " + "; ".join(running))
+        parts.append("running (status only: you do not know their progress; run `show JOB_ID` before "
+                     "describing it): " + "; ".join(running))
     if finished:
         parts.append("finished since last turn (already announced aloud): " + "; ".join(finished))
     return ("\n\n[Background jobs, for your awareness; mention only if relevant or asked. Full results: "
@@ -212,24 +237,31 @@ class LLMProvider(OpenAIProvider):
         # Spoken-update state is shared across the (at most two) Hermes turns of one request.
         state = {"started": now, "last_spoken": now, "acked": False, "said": set(), "stills": 0}
         for attempt in range(MAX_NUDGES + 1):
-            result = {"answer": "", "tools": 0, "failed": False}
+            result = {"answer": "", "tools": 0, "failed": False, "held": ""}
             yield from self._run(dialogue, request, state, result)
-            if result["failed"] or result["tools"] or attempt == MAX_NUDGES or not is_promise(result["answer"]):
+            held = result["held"]  # the whole reply of a turn with no tool call, not yet spoken
+            if result["failed"] or result["tools"]:
                 return
-            # The model announced the work ("one moment, checking your lists") and ended its turn
-            # without a tool call. The robot cannot wait for a second message: ask for it now.
-            logger.bind(tag=TAG).warning(f"Hermes stopped on a promise ({result['answer']!r}); nudging")
+            # A turn with no tool call that only announces work ("one moment, checking your
+            # lists") or reports an action or live status ("Done", "still pulling the weights")
+            # is usually invented. It has not been spoken: ask Hermes to act or correct itself.
+            nudge = NUDGE if is_promise(held) else CLAIM_NUDGE if is_unverified_claim(held) else None
+            if nudge is None or attempt == MAX_NUDGES:
+                if held:
+                    yield held
+                return
+            logger.bind(tag=TAG).warning(f"Hermes replied without tools ({held!r}); nudging")
             dialogue = dialogue + [
-                {"role": "assistant", "content": result["answer"]},
-                {"role": "user", "content": NUDGE},
+                {"role": "assistant", "content": held},
+                {"role": "user", "content": nudge},
             ]
-            yield " "
 
     def _run(self, dialogue, request, state, result):
         """Stream one Hermes turn; record its answer text and tool count in ``result``."""
         out: queue.Queue = queue.Queue()
         threading.Thread(target=self._stream_events, args=(dialogue, out), daemon=True).start()
         answering = False
+        held = []  # reply text held back until a tool call shows it is a preamble, or the turn ends
         thinking = False  # inside <think>...</think>
         dropped_cjk = False
         prefix = ""
@@ -252,14 +284,21 @@ class LLMProvider(OpenAIProvider):
                 if value is not None:
                     result["failed"] = True
                     logger.bind(tag=TAG).error(f"Hermes request failed: {value}")
-                    if not answering:
+                    if held:
+                        yield "".join(held)
+                    elif not answering:
                         yield "Sorry, I could not reach JARVIS just now."
                 elif not answering and dropped_cjk:
                     result["failed"] = True
                     yield NOT_CAUGHT
+                else:
+                    result["held"] = "".join(held)
                 return
             if kind == "tool":
                 result["tools"] += 1
+                if held:  # it was a preamble ("I'll delegate that."): speak it now
+                    yield "".join(held)
+                    held.clear()
                 # Text before a tool call was a preamble ("I'll delegate that."), not the
                 # answer: keep the progress lines going until the real answer streams.
                 answering = False
@@ -293,7 +332,10 @@ class LLMProvider(OpenAIProvider):
                 answering = True
                 state["last_spoken"] = time.monotonic()
                 result["answer"] += text
-                yield text
+                if result["tools"]:
+                    yield text
+                else:
+                    held.append(text)
 
     def response(self, session_id, dialogue, **kwargs):
         yield from self._respond(dialogue)
