@@ -35,6 +35,7 @@ Chinese, and often said it had done things it had not.
 | **Tool-use guards on**: `tool_use_enforcement: auto`, `execution_guidance: auto`, `task_completion_guidance: true` | With them off, DeepSeek ended turns with a promise ("give me a moment to pull them together") and no tool call, and claimed tasks were added without adding them |
 | **"Always reply in English"** on its own line in `SOUL.md` | "English only" buried at the end of a long line was ignored on garbled input |
 | **Google Tasks is the only task system** (`SOUL.md`, `task-manager` skill, `tasks-reminders` skill) | Every prompt still pointed at a removed task server, so the agent kept trying it and reported it unreachable |
+| **Background helpers** (`background-task` skill): "spin off a helper" and long jobs start detached; JARVIS replies at once and the result is announced on the robot when done (`bg_task.py start/list/show`) | `delegate_task` keeps the voice turn open until the subagent finishes (minutes), and Hermes's own async delegation only stores the result for the next API turn, so nothing ever came back by itself |
 | Fallback that actually exists | The previous fallback pointed at a local model server that had been stopped, so a 429 from the main model ended the turn |
 
 Measured on "What are my open tasks right now?":
@@ -54,6 +55,8 @@ Measured on "What are my open tasks right now?":
    - `hermes/skills/tasks-reminders/SKILL.md`: your time zone and speech delivery command
    - `hermes/skills/task-manager/task-classification.example.json`: list names and work keywords
    - `xiaozhi/config.example.yaml`: your Hermes API server key
+   - `background-task`: set `BG_ANNOUNCE_CMD` if your robot announcements are not sent with
+     `~/.hermes/speech/speech.py enqueue --text` (this repo does not include that outbox)
 
 2. **xiaozhi-server** (backs up every file it edits as `*.before-jarvis-desk-bot`):
 
@@ -68,7 +71,7 @@ Measured on "What are my open tasks right now?":
    ```bash
    cp hermes/SOUL.md ~/.hermes/SOUL.md
    cp hermes/memories/USER.md ~/.hermes/memories/USER.md
-   cp -r hermes/skills/task-manager hermes/skills/tasks-reminders ~/.hermes/skills/
+   cp -r hermes/skills/task-manager hermes/skills/tasks-reminders hermes/skills/background-task ~/.hermes/skills/
    cp hermes/skills/task-manager/task-classification.example.json ~/.hermes/task-classification.json
    ```
 

@@ -41,6 +41,7 @@ MAX_STILL = 6  # enough for a ~2 minute subagent run
 # preview never names them. ASR often hears "Plane" as "plain" or "plan".
 TOOL_LINES = (
     # Delegation first: a subagent's goal text often mentions tasks or the web.
+    (r"bg_task|background-task", "Starting a helper."),
     (r"delegate_task|subagent", "Handing part of this to a helper."),
     (r"\bplane\b|\bplain\b|\bplan\b|\btasks?\b|to-?dos?", "Checking your tasks."),
     (r"obsidian|vault|\bnotes?\b", "Looking through your notes."),
