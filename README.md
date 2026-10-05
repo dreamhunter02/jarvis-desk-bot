@@ -39,7 +39,7 @@ Chinese, and often said it had done things it had not.
 | Change | Problem it fixes |
 |---|---|
 | **Main model DeepSeek V4.1 Flash, fallback GLM 5.3 Flash** (both on DeepInfra) | GLM 5.3 Flash took 17–49 s per agent step on DeepInfra (17.9 s for a 21-token "hello") and returned 429 "Model busy"; DeepSeek takes 0.7–1.7 s |
-| **DeepSeek reasoning `low`** (`agent.reasoning_overrides`) | With reasoning off it answered without a moment to check itself; `low` costs about 60 thinking tokens and no measurable latency on DeepInfra |
+| **DeepSeek reasoning `high`** (`agent.reasoning_overrides`) | With reasoning off it answered without a moment to check itself; `high` adds about 0.4 s per step on DeepInfra (Flash still thinks only 0-200 tokens) |
 | **Tool-use guards on**: `tool_use_enforcement: auto`, `execution_guidance: auto`, `task_completion_guidance: true` | With them off, DeepSeek ended turns with a promise ("give me a moment to pull them together") and no tool call, and claimed tasks were added without adding them |
 | **"Always reply in English"** on its own line in `SOUL.md` | "English only" buried at the end of a long line was ignored on garbled input |
 | **Google Tasks is the only task system** (`SOUL.md`, `task-manager` skill, `tasks-reminders` skill) | Every prompt still pointed at a removed task server, so the agent kept trying it and reported it unreachable |
