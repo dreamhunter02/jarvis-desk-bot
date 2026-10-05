@@ -1,0 +1,25 @@
+# Excerpt for ~/.hermes/config.yaml (merge into yours; keys and secrets stay in ~/.hermes/.env).
+
+model:
+  default: deepseek-ai/DeepSeek-V4.1-Flash   # ~1 s per agent step on DeepInfra (GLM-5.3-Flash took 17-49 s)
+  provider: deepinfra
+  base_url: https://api.deepinfra.com/v1/openai
+
+# Used only when the main model errors (e.g. 429 "Model busy") after its retries.
+# A slow but successful reply never triggers a fallback.
+fallback_providers:
+  - provider: deepinfra
+    model: zai-org/GLM-5.3-Flash
+    base_url: https://api.deepinfra.com/v1/openai
+    api_mode: chat_completions
+
+agent:
+  reasoning_effort: none
+  reasoning_overrides:
+    zai-org/GLM-5.3-Flash: low
+  # Keep these ON for DeepSeek and GLM. With them off, DeepSeek ends turns with a promise
+  # ("give me a moment to pull them together") and no tool call, and claims tasks were added
+  # without adding them.
+  tool_use_enforcement: auto
+  execution_guidance: auto
+  task_completion_guidance: true

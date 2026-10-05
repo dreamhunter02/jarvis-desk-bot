@@ -1,0 +1,22 @@
+# Excerpt for xiaozhi-esp32-server data/.config.yaml (merge into yours).
+selected_module:
+  LLM: HermesLLM
+
+LLM:
+  HermesLLM:
+    type: hermes            # the provider from xiaozhi/hermes_provider (apply.py sets this)
+    model_name: hermes-agent
+    base_url: http://127.0.0.1:8642/v1   # Hermes API server
+    api_key: ADD-YOUR-HERMES-API-SERVER-KEY-HERE
+    extra_body:
+      conversation: jarvis-desk-robot    # one persistent Hermes conversation for the robot
+    # Optional provider settings (defaults shown):
+    # progress: true        # false = no spoken updates
+    # ack_after_s: 3        # "Let me check." if nothing has happened by then
+    # still_after_s: 20     # "Still working on it." after this long without speech
+    # read_timeout: 300
+
+# The provider drops CJK text, so the TTS voice should be English, e.g. Kokoro:
+TTS:
+  KokoroTTS:
+    language: English

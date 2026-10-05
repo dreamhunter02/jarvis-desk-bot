@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy to ~/.hermes/task-classification.json. ADD YOUR PERSONAL INFO HERE: your list names and work keywords.",
+  "personal_list": "Life Todo",
+  "work_list": "Work Todo",
+  "work": ["paper", "review", "slides", "deadline", "draft", "meeting", "your-project", "your-team", "your-customer"]
+}

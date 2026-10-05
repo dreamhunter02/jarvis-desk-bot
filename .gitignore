@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+google_token.json
+task-classification.json
+*.before-*
