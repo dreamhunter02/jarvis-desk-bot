@@ -49,6 +49,7 @@ TOOL_LINES = (
     # Delegation first: a subagent's goal text often mentions tasks or the web.
     (r"bg_task\.py (?:list|show|cancel)", "Checking on your helpers."),
     (r"bg_task\.py start", "Starting a helper."),
+    (r"bg_task|background-task/", "Checking on your helpers."),  # before "tasks": the path contains "task"
     (r"delegate_task|subagent", "Handing part of this to a helper."),
     (r"\bplane\b|\bplain\b|\bplan\b|\btasks?\b|to-?dos?", "Checking your tasks."),
     (r"obsidian|vault|\bnotes?\b", "Looking through your notes."),
@@ -56,7 +57,7 @@ TOOL_LINES = (
     (r"perplexity|web_search|web_extract|search the web|browser|\bnews\b", "Searching the web."),
     (r"weather", "Checking the weather."),
     (r"github|gitlab|\bgit\b", "Checking the repository."),
-    (r"memory|session_search", "Checking what I remember."),
+    (r"(?:^|\s)memory(?:\s|$)|session_search", "Checking what I remember."),  # the tool, not "memory.total"
     (r"read_file|search_files|write_file|patch", "Going through the files."),
 )
 PROGRESS_LINES = {ACK, *STILL, *(line for _, line in TOOL_LINES if line)}

@@ -123,8 +123,8 @@ def _announce(text: str) -> None:
 
 
 def _spoken_summary(answer: str, title: str) -> str:
-    match = re.search(r"^\s*SPOKEN:\s*(.+)$", answer, re.M)
-    sentence = match.group(1) if match else answer.strip().splitlines()[-1] if answer.strip() else ""
+    found = re.findall(r"SPOKEN:\s*(.+)$", answer, re.M)  # the marker is not always at a line start
+    sentence = found[-1] if found else answer.strip().splitlines()[-1] if answer.strip() else ""
     sentence = re.sub(r"[*_`#>|]+|https?://\S+", "", sentence)
     sentence = re.sub(r"^[^\w\"']+", "", sentence).strip()  # leading emoji
     return f"Your helper finished {title}: {sentence}" if sentence else f"Your helper finished {title}."
@@ -145,8 +145,16 @@ def cmd_start(args) -> None:
     }
     _save(job)
     log = open(JOBS / f"{job['id']}.log", "ab")
+    command = [sys.executable, os.path.abspath(__file__), "_run", job["id"]]
+    if shutil.which("systemd-run"):
+        # Run in its own systemd scope: a job started from a service (the Hermes gateway)
+        # would otherwise be killed with that service on every restart.
+        scoped = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+                  f"--unit=jarvis-bg-{job['id']}"] + command
+        if subprocess.run(["systemctl", "--user", "is-system-running"], capture_output=True).returncode in (0, 1):
+            command = scoped
     worker = subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__), "_run", job["id"]],
+        command,
         stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         start_new_session=True,  # survive the terminal tool that started it
     )
