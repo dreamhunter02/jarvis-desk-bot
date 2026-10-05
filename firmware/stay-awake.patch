@@ -1,0 +1,17 @@
+diff --git a/examples/agent/chatbot/main/main.cpp b/examples/agent/chatbot/main/main.cpp
+index cca2a57..9da4be0 100644
+--- a/examples/agent/chatbot/main/main.cpp
++++ b/examples/agent/chatbot/main/main.cpp
+@@ -93,6 +93,12 @@ extern "C" void app_main(void)
+         /* Initialize AI agents */
+         AI_Agents::get_instance().init({
+             .task_scheduler = backend_scheduler,
++            // jarvis-desk-bot: stay awake until the server ends the conversation (an end phrase such as
++            // "bye bye"). The defaults (30 s before the first speech, 10 s after the last)
++            // put the robot to sleep while the agent was still working, or when the on-board
++            // VAD missed speech the server heard. 24 h is effectively never.
++            .afe_wakeup_start_timeout_ms = 24U * 60 * 60 * 1000,
++            .afe_wakeup_end_timeout_ms = 24U * 60 * 60 * 1000,
+         });
+         AI_Agents::get_instance().init_coze();
+         AI_Agents::get_instance().init_openai();

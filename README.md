@@ -27,6 +27,12 @@ Chinese, and often said it had done things it had not.
 | **English full stops end a sentence** in the TTS splitter (`tts/base.py`; "3.5" is not split) | Upstream only splits on `? ! ; :` and CJK punctuation, so "Let me check." waited for the whole answer, and English answers were spoken only once complete |
 | **Thinking face stays up** during progress lines (optional; needs a `turnFeedback.on_spoken_sentence` hook) | The face switched to "speaking" at the first filler line |
 
+### Robot firmware (`firmware/`)
+
+| Change | Problem it fixes |
+|---|---|
+| **Stay awake until an end phrase** (`stay-awake.patch`): the firmware's own wake window goes from 30 s / 10 s to 24 h | The robot put itself to sleep 10 s after it stopped hearing speech, cutting conversations while the agent worked or when its on-board voice detector missed speech the server heard |
+
 ### Hermes (`hermes/`)
 
 | Change | Problem it fixes |
