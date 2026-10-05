@@ -35,11 +35,13 @@ logger = setup_logging()
 
 ACK = "Let me check."
 STILL = ("Still working on it.", "Bear with me, almost there.", "Still on it.")
-MAX_STILL = 3
+MAX_STILL = 6  # enough for a ~2 minute subagent run
 # (pattern over the request, tool name and preview, spoken line); first match wins.
 # The request matters: Plane and notes go through a generic skill script whose
 # preview never names them. ASR often hears "Plane" as "plain" or "plan".
 TOOL_LINES = (
+    # Delegation first: a subagent's goal text often mentions tasks or the web.
+    (r"delegate_task|subagent", "Handing part of this to a helper."),
     (r"\bplane\b|\bplain\b|\bplan\b|\btasks?\b|to-?dos?", "Checking your tasks."),
     (r"obsidian|vault|\bnotes?\b", "Looking through your notes."),
     (r"remind|cron|schedule|calendar", "Checking your schedule."),
@@ -47,7 +49,6 @@ TOOL_LINES = (
     (r"weather", "Checking the weather."),
     (r"github|gitlab|\bgit\b", "Checking the repository."),
     (r"memory|session_search", "Checking what I remember."),
-    (r"delegate|subagent", "Handing part of this to a helper."),
     (r"read_file|search_files|write_file|patch", "Going through the files."),
 )
 PROGRESS_LINES = {ACK, *STILL, *(line for _, line in TOOL_LINES)}
@@ -199,7 +200,10 @@ class LLMProvider(OpenAIProvider):
                 return
             if kind == "tool":
                 result["tools"] += 1
-                if not self.progress or answering:
+                # Text before a tool call was a preamble ("I'll delegate that."), not the
+                # answer: keep the progress lines going until the real answer streams.
+                answering = False
+                if not self.progress:
                     continue
                 line = spoken_line(request, *value)
                 logger.bind(tag=TAG).info(f"Hermes tool: {value[0]} {value[1]!r} -> {line}")
@@ -227,6 +231,7 @@ class LLMProvider(OpenAIProvider):
                 if not answering:
                     text, prefix = prefix + text, ""
                 answering = True
+                state["last_spoken"] = time.monotonic()
                 result["answer"] += text
                 yield text
 
