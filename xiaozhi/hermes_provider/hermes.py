@@ -1,22 +1,28 @@
-"""bujz1: Hermes agent LLM provider that talks while the agent works.
+"""Hermes agent LLM provider for xiaozhi-esp32-server that talks while the agent works.
 
-The generic OpenAI provider only yields the final answer, so the robot sits
-silent for the whole Hermes run (often 20-60 s). Hermes's streamed chat
-completions also carry ``event: hermes.tool.progress`` frames; this provider
-turns them into short spoken updates and fills long silences:
+xiaozhi's generic OpenAI provider yields only the final answer, so a voice robot sits
+silent for the whole agent run. Hermes's streamed chat completions also carry
+``event: hermes.tool.progress`` frames; this provider turns them into short spoken
+updates and fills long silences:
 
     "Let me check."             nothing back after ``ack_after_s``
-    "Checking Plane." ...       when Hermes starts a tool (once per kind)
-    "Still working on it."      after ``still_after_s`` without any speech
+    "Checking your tasks." ...  when Hermes starts a kind of tool (once per kind; TOOL_LINES)
+    "Still working on it."      after ``still_after_s`` without any speech (up to MAX_STILL times)
 
-Updates are yielded as ordinary text, so xiaozhi speaks them through its normal
-TTS path ahead of the answer; they are removed from the dialogue history sent
-back to Hermes. Config (data/.config.yaml, LLM.HermesLLM):
+It also:
+  * drops CJK text, so an English voice never reads Chinese from a drifting model;
+  * removes its own progress lines from the history sent back to Hermes;
+  * appends a short status of background-task jobs (running, latest step, newly
+    finished) to the outgoing copy of the latest user message.
+
+Updates are yielded as ordinary text, so xiaozhi speaks them through its normal TTS
+path ahead of the answer. Config (data/.config.yaml, under the LLM entry for Hermes):
 
     type: hermes
-    progress: true        # false = behave like the plain OpenAI provider
+    progress: true        # false = no spoken updates
     ack_after_s: 3
     still_after_s: 20
+    read_timeout: 300
 """
 
 import json
@@ -40,18 +46,18 @@ ACK = "Let me check."
 STILL = ("Still working on it.", "Bear with me, almost there.", "Still on it.")
 MAX_STILL = 6  # enough for a ~2 minute subagent run
 # (pattern over the request, tool name and preview, spoken line); first match wins.
-# The request matters: Plane and notes go through a generic skill script whose
-# preview never names them. ASR often hears "Plane" as "plain" or "plan".
+# The request matters: tasks and notes often go through a generic skill script whose
+# preview never names them.
 TOOL_LINES = (
     # Loading the background-task skill says nothing (its name would match "tasks");
     # the start/list/cancel commands below get their own lines.
     (r"skill_view\s+\S*background-task", None),
-    # Delegation first: a subagent's goal text often mentions tasks or the web.
+    # Helpers before "tasks": the script path and goal text often contain "task".
     (r"bg_task\.py (?:list|show|cancel)", "Checking on your helpers."),
     (r"bg_task\.py start", "Starting a helper."),
-    (r"bg_task|background-task/", "Checking on your helpers."),  # before "tasks": the path contains "task"
+    (r"bg_task|background-task/", "Checking on your helpers."),
     (r"delegate_task|subagent", "Handing part of this to a helper."),
-    (r"\bplane\b|\bplain\b|\bplan\b|\btasks?\b|to-?dos?", "Checking your tasks."),
+    (r"\btasks?\b|\bto-?dos?\b|\bto do\b", "Checking your tasks."),
     (r"obsidian|vault|\bnotes?\b", "Looking through your notes."),
     (r"remind|cron|schedule|calendar", "Checking your schedule."),
     (r"perplexity|web_search|web_extract|search the web|browser|\bnews\b", "Searching the web."),

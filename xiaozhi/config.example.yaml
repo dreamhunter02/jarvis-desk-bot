@@ -7,7 +7,7 @@ LLM:
     type: hermes            # the provider from xiaozhi/hermes_provider (apply.py sets this)
     model_name: hermes-agent
     base_url: http://127.0.0.1:8642/v1   # Hermes API server
-    api_key: ADD-YOUR-HERMES-API-SERVER-KEY-HERE
+    api_key: "{{HERMES_API_SERVER_KEY}}"   # ADD YOUR PERSONAL INFO HERE
     extra_body:
       conversation: jarvis-desk-robot    # one persistent Hermes conversation for the robot
     # Optional provider settings (defaults shown):
