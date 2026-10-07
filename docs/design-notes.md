@@ -58,6 +58,8 @@ not generalise. Model choice, reasoning effort and Hermes's own guards are the d
 | The main agent did not know what was running, or what had finished. | The provider attaches a short status note to each request: running jobs with their latest step, and jobs finished since the last turn with their result. |
 | "How is it going?" got invented progress. | Every helper step (tool call, failed tool, note between tools) is logged from Hermes's `stream-json` events; the note shows the latest step, and `show` lists recent ones. |
 | Restarting the Hermes gateway killed every running helper: they lived in its systemd cgroup. | Each helper runs in its own `systemd-run --user --scope`. |
+| Nine of fifteen helpers failed. Each hit a 40-turn cap partway through a deployment or benchmark (64–96 steps), after Hermes's command safety scan had blocked shell redirects into `~/.hermes`, complex one-liners and `nohup` launches; the report kept only a session id. | Two kinds of job: *helpers* for quick work (10 minutes, 60 steps) and *goal agents* for long goals (rounds of 30 minutes and 150 steps, notes carried between rounds, a status line per round, asking the user when blocked). Both get work rules that stay inside the safety scan, and stopped jobs report the real reason (read from Hermes's own log) with their partial result. |
+| A goal agent on a local model wrote tool calls as text (`<tool_call>write_file<arg_key>…`) and returned empty replies. | The serving stack was not parsing that model's tool calls. Goal agents take their own model (`BG_GOAL_MODEL`), and announcements never read out tool-call text. |
 
 ## What did not work: speech-to-speech
 

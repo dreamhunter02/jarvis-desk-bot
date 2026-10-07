@@ -18,9 +18,11 @@ multi-minute jobs without leaving you in silence.
 - **Talks while it works.** Instead of silence until the final answer, you hear "Let me check.",
   then what the agent is doing ("Checking your tasks.", "Searching the web."), and "Still working
   on it." during long steps.
-- **Background helpers.** Say "spin off a helper to…" and JARVIS starts the job, answers right
-  away, and announces the result when it finishes. Ask "what's running?" or "how is it going?"
-  at any time, or cancel a job. Several can run at once.
+- **Background helpers and goal agents.** Say "spin off a helper to…" and JARVIS starts the job,
+  answers right away, and announces the result when it finishes. Quick jobs go to a *helper*
+  (about 10 minutes); long goals such as deployments and benchmarks go to a *goal agent* that
+  works in rounds for hours, keeps notes between rounds, and asks you when it is blocked. Ask
+  "what's running?" or "how is it going?" at any time, answer its questions, or cancel a job.
 - **Stays in the conversation.** No timeouts: the robot keeps listening until you say "bye bye",
   "good bye" or "bye jarvis".
 - **Chimes.** A rising "ba-ding" when it hears the wake word, a falling "tung" when it goes to sleep.
@@ -49,8 +51,9 @@ multi-minute jobs without leaving you in silence.
    turns Hermes's tool-progress events into short spoken updates and attaches the status of
    any background jobs.
 3. Hermes runs its tools and skills and writes a short, speakable answer (rules in `SOUL.md`).
-4. Long jobs go to the **background-task** skill: a detached Hermes run that logs each step and
-   announces a one-sentence result through the robot when done.
+4. Background work goes to the **background-task** skill: a *helper* is one detached Hermes run;
+   a *goal agent* is a series of runs (rounds) that carry their state in a notes file. Both log
+   each step and announce a one-sentence result through the robot when done.
 
 Read [docs/design-notes.md](docs/design-notes.md) for the problems each piece solves and the
 measurements behind the defaults.
@@ -133,10 +136,12 @@ Say "Jarvis", wait for the chime, then: "What's on my list today?"
 | "Jarvis" | Chime; the robot listens until you say an end phrase |
 | "What's on my list today?" | Reads your Google Tasks |
 | "Add pay the invoice for Friday" | Adds a task to the right list and confirms |
-| "Spin off a helper to compare the latest open models" | Starts a background job and answers at once |
-| "What's running?" / "How is the comparison going?" | Running jobs and their latest step |
+| "Spin off a helper to compare the latest open models" | Starts a quick helper and answers at once |
+| "Spin off an agent to deploy the TTS model on the second Spark" | Starts a goal agent for the long job |
+| "What's running?" / "How is the deployment going?" | Running jobs, their latest step and round |
+| "Use the int8 weights" (after an agent asks) | Passes your answer on; the agent resumes |
 | "What did the helper find?" | The saved result of a finished job |
-| "Cancel the comparison" | Stops a running job |
+| "Cancel the deployment" | Stops a job |
 | "Bye bye", "good bye", "bye jarvis" | Chime, and the robot goes to sleep |
 
 ## Configuration
@@ -159,11 +164,15 @@ Spoken lines per kind of tool live in `TOOL_LINES` in
 | Variable | Default | Meaning |
 |---|---|---|
 | `BG_ANNOUNCE_CMD` | `python3 ~/.hermes/speech/speech.py enqueue --text` | Command that speaks a result; the text is appended as the last argument |
-| `BG_TASK_MAX_RUNNING` | `3` | Jobs that can run at once |
-| `BG_TASK_BUDGET_S` | `1200` | Time limit per job, in seconds |
-| `BG_TASK_DIR` | `~/.hermes/background` | Job records and step logs |
+| `BG_TASK_MAX_RUNNING` | `3` | Jobs that can run at once (both kinds) |
+| `BG_HELPER_BUDGET_S` / `BG_HELPER_STEPS` | `600` / `60` | A helper's time and step limits |
+| `BG_GOAL_ROUND_S` / `BG_GOAL_STEPS` | `1800` / `150` | A goal agent's limits per round |
+| `BG_GOAL_ROUNDS` / `BG_GOAL_BUDGET_S` | `8` / `14400` | Rounds and total time before a goal agent pauses |
+| `BG_GOAL_MODEL` / `BG_GOAL_PROVIDER` | Hermes's main model | Model for goal agents |
+| `BG_TASK_DIR` | `~/.hermes/background` | Job records, step logs and goal notes |
 
-Helpers use the subagent model from `delegation.model` in `~/.hermes/config.yaml`.
+Helpers use the subagent model from `delegation.model` in `~/.hermes/config.yaml`. Goal agents
+use the main model unless `BG_GOAL_MODEL` is set; pick one with reliable tool calling.
 
 **Conversation length** (`data/.config.yaml`): `listen_silence_timeout: 0` keeps a
 conversation open until an end phrase. The robot then also hears nearby conversations; say
@@ -180,7 +189,7 @@ hermes/
   memories/USER.md               facts about you (template)
   skills/task-manager/           Google Tasks skill and CLI
   skills/tasks-reminders/        reminders tied to tasks
-  skills/background-task/        detached helpers: start, list, show, cancel
+  skills/background-task/        helpers and goal agents: start, goal, tell, list, show, cancel
 xiaozhi/
   apply.py                       installer for xiaozhi-server
   config.example.yaml            provider and conversation settings
@@ -197,6 +206,8 @@ docs/
 | Silent until the answer | The Hermes LLM entry has `type: hermes`, and `apply.py` reported the TTS splitter as patched |
 | The conversation ends while JARVIS is working | `listen_silence_timeout: 0` on the server, and the firmware patch is flashed |
 | A helper never reports back | `bg_task.py list`; check `BG_ANNOUNCE_CMD`, and that `systemd-run --user` works for the gateway's user |
+| A job stopped early | `bg_task.py show JOB_ID` gives the reason ("used all 60 steps", "hit the 10-minute limit") and the partial result; long jobs belong to a goal agent |
+| A goal agent writes `<tool_call>` text instead of acting | Its model's server is not parsing tool calls; set `BG_GOAL_MODEL` to a model with working tool calling |
 | Helpers die when Hermes restarts | They should run as `jarvis-bg-*.scope` units: `systemctl --user list-units 'jarvis-bg-*'` |
 | JARVIS says it did something it did not | Keep the tool-use guards on and reasoning at `high` (see `hermes/config.example.yaml`) |
 | "I have no subagent tool" | Remove `delegate_task` from `tools.tool_search.defer` |

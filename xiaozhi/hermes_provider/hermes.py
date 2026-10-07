@@ -86,26 +86,31 @@ BACKGROUND_DIR = Path(os.environ.get("BG_TASK_DIR", Path.home() / ".hermes/backg
 
 
 def background_note() -> str:
-    """Status of background-task jobs for the agent: what is running, and what finished
-    since the last turn (each finished job is reported once, then marked mentioned)."""
+    """Status of background-task jobs for the agent: what is running (helpers and goal agents,
+    with their latest step), what is waiting for the user, and what ended since the last turn
+    (each outcome is reported once, then marked mentioned)."""
     if not BACKGROUND_DIR.is_dir():
         return ""
-    running, finished = [], []
+    running, waiting, ended = [], [], []
     for path in sorted(BACKGROUND_DIR.glob("*.json")):
         try:
             job = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
         status = job.get("status")
+        kind = "goal agent" if job.get("kind") == "goal" else "helper"
+        name = f"{job.get('title')} ({kind}, {job.get('id')}"
         if status == "running":
             minutes = max(1, round((time.time() - job.get("started_ts", time.time())) / 60))
-            latest = ""
+            detail = f", round {job['round']}" if job.get("kind") == "goal" and job.get("round") else ""
             if job.get("last_step"):
                 ago = round(time.time() - job.get("last_step_ts", time.time()))
-                latest = f"; {job.get('steps', 0)} steps, latest {ago} s ago: {job['last_step'][:160]}"
-            running.append(f"{job.get('title')} ({job.get('id')}, {minutes} min so far{latest})")
-        elif status in ("done", "failed") and not job.get("mentioned"):
-            finished.append(f"{job.get('title')} ({job.get('id')}, {status}): {job.get('spoken') or job.get('error') or ''}")
+                detail += f"; {job.get('steps', 0)} steps, latest {ago} s ago: {job['last_step'][:160]}"
+            running.append(f"{name}, {minutes} min so far{detail})")
+        elif status == "waiting":
+            waiting.append(f"{name}) asks: {job.get('question') or job.get('spoken') or ''}")
+        elif status in ("done", "failed", "stopped", "paused") and not job.get("mentioned"):
+            ended.append(f"{name}, {status}): {job.get('spoken') or job.get('error') or ''}")
             job["mentioned"] = True
             try:
                 tmp = path.with_suffix(".tmp")
@@ -113,16 +118,18 @@ def background_note() -> str:
                 tmp.replace(path)
             except OSError:
                 pass
-    if not running and not finished:
+    if not (running or waiting or ended):
         return ""
     parts = []
     if running:
-        parts.append("running (you know only the latest step shown; for more, run `show JOB_ID`, which "
-                     "lists the recent steps): " + " | ".join(running))
-    if finished:
-        parts.append("finished since last turn (already announced aloud): " + "; ".join(finished))
-    return ("\n\n[Background jobs, for your awareness; mention only if relevant or asked. Full results: "
-            "background-task show JOB_ID. " + " | ".join(parts) + "]")
+        parts.append("running (you know only the latest step shown; for more, run `show JOB_ID`): "
+                     + " | ".join(running))
+    if waiting:
+        parts.append("waiting for the user's answer (pass it on with `tell JOB_ID`): " + " | ".join(waiting))
+    if ended:
+        parts.append("ended since last turn (already announced aloud): " + " | ".join(ended))
+    return ("\n\n[Background jobs, for your awareness; mention only if relevant or asked. "
+            "Commands: background-task show / tell / cancel JOB_ID. " + " || ".join(parts) + "]")
 
 
 def with_background_note(dialogue: list) -> list:
