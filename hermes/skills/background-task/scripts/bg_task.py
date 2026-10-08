@@ -2,25 +2,27 @@
 """Background work for a Hermes voice agent: quick helpers and long-running goal agents.
 
     bg_task.py start --title "..." --goal "..."    # helper: one run, about 10 min / 60 steps
-    bg_task.py goal  --title "..." --goal "..."    # goal agent: rounds, hours, notes between rounds
-    bg_task.py tell JOB_ID "message"               # add guidance; resumes a waiting goal agent
+    bg_task.py goal  --title "..." --goal "..."    # goal agent: a Hermes kanban goal card, hours
+    bg_task.py tell JOB_ID "message"               # answer a waiting goal agent, or add guidance
     bg_task.py list                                # all jobs, with the latest step of running ones
-    bg_task.py show JOB_ID [--steps N]             # recent steps, notes and result of one job
+    bg_task.py show JOB_ID [--steps N]             # recent steps and result of one job
     bg_task.py cancel JOB_ID                       # stop a job
 
-Both kinds return at once and run detached in their own systemd user scope (so restarting
-the Hermes gateway does not kill them). Each Hermes run is `hermes chat --oneshot --format
-stream-json`; every step (tool call, failed tool, note between tools) is appended to
-JOB_ID.progress and the latest one is kept in the record JOB_ID.json.
+Both return at once. Workers run detached in their own systemd user scope, so restarting the
+Hermes gateway does not kill them. The latest step of each job is kept in its record
+(JOB_ID.json) for the main agent's status note.
 
-A helper runs once with the subagent model (delegation.model in ~/.hermes/config.yaml). If
-it runs out of steps or time it is reported as stopped, with how far it got.
+A helper is one `hermes chat --oneshot --format stream-json` run with the subagent model
+(delegation.model in ~/.hermes/config.yaml); every step is appended to JOB_ID.progress. If it
+runs out of steps or time it is reported as stopped, with the reason from Hermes's log and how
+far it got.
 
-A goal agent runs in rounds with the main model. Its memory between rounds is a notes file
-(JOB_ID.notes.md) it rewrites at the end of each round, plus the previous round's summary
-and any messages sent with `tell`. Each round ends with GOAL_STATUS: done, continue or
-blocked. It stops when done, waits for the user when blocked, and pauses after its round or
-time limit; `tell` resumes a waiting or paused goal agent.
+A goal agent is a Hermes kanban card in goal mode (`hermes kanban create --goal`): the kanban
+dispatcher in the gateway runs it in its own session, and after each turn Hermes's goal judge
+(auxiliary.goal_judge) decides whether it is done. When the worker needs the user it blocks
+the card with a question; `tell` unblocks it with the answer. A watcher follows the card,
+keeps its latest step from the worker log, and announces when it is done, needs the user, or
+fails.
 
 Results are announced through a speech command. A record's `mentioned` flag is set once a
 client (the xiaozhi provider) has shown the outcome to the main agent.
@@ -30,11 +32,11 @@ Environment:
     BG_ANNOUNCE_CMD      speech command; the text is appended as the last argument
                          (default: python3 ~/.hermes/speech/speech.py enqueue --text)
     BG_TASK_MAX_RUNNING  jobs running at once, both kinds (default 3)
-    BG_HELPER_BUDGET_S   helper time limit (default 600)      BG_HELPER_STEPS  (default 60)
-    BG_GOAL_ROUND_S      goal round time limit (default 1800) BG_GOAL_STEPS    (default 150)
-    BG_GOAL_ROUNDS       rounds before a goal agent pauses (default 8)
-    BG_GOAL_BUDGET_S     total time before it pauses (default 14400)
-    BG_GOAL_MODEL, BG_GOAL_PROVIDER   goal agent model (default: Hermes's main model)
+    BG_HELPER_BUDGET_S   helper time limit (default 600)      BG_HELPER_STEPS (default 60)
+    BG_GOAL_TURNS        goal-loop turns per card (default 30)
+    BG_GOAL_RUNTIME      runtime cap per worker run (default 4h)
+    BG_GOAL_MODEL, BG_GOAL_PROVIDER   goal agent model (default: the kanban profile's model)
+    BG_GOAL_ASSIGNEE     kanban profile that runs goal cards (default "default")
 """
 
 import argparse
@@ -57,12 +59,12 @@ DEFAULT_ANNOUNCE = f"python3 {HOME / '.hermes/speech/speech.py'} enqueue --text"
 MAX_RUNNING = int(os.environ.get("BG_TASK_MAX_RUNNING", "3"))
 HELPER_BUDGET_S = int(os.environ.get("BG_HELPER_BUDGET_S", "600"))
 HELPER_STEPS = int(os.environ.get("BG_HELPER_STEPS", "60"))
-GOAL_ROUND_S = int(os.environ.get("BG_GOAL_ROUND_S", "1800"))
-GOAL_STEPS = int(os.environ.get("BG_GOAL_STEPS", "150"))
-GOAL_ROUNDS = int(os.environ.get("BG_GOAL_ROUNDS", "8"))
-GOAL_BUDGET_S = int(os.environ.get("BG_GOAL_BUDGET_S", "14400"))
+GOAL_TURNS = int(os.environ.get("BG_GOAL_TURNS", "30"))
+GOAL_RUNTIME = os.environ.get("BG_GOAL_RUNTIME", "4h")
+GOAL_ASSIGNEE = os.environ.get("BG_GOAL_ASSIGNEE", "default")
+WATCH_INTERVAL_S = 20
 SPOKEN_LIMIT = 280
-ACTIVE = ("running",)
+ACTIVE = ("running", "waiting")  # waiting = a goal card blocked on the user
 
 # Ways of working that stay inside Hermes's command safety checks. Helpers cannot ask for
 # approval, so a blocked command only burns steps.
@@ -90,21 +92,14 @@ HELPER_INSTRUCTIONS = (
     "under 30 words summarizing the outcome for a voice assistant (no markdown, links or IDs)."
 )
 
-GOAL_INSTRUCTIONS = (
-    "You are a goal agent working toward a long-running goal in rounds. This is round {round}. "
-    "Each round has up to {steps} steps and {minutes} minutes; you will be called again for the "
-    "next round. Your only memory between rounds is the notes file {notes}: open it with "
-    "read_file first (write_file refuses to overwrite a file you have not read), and before "
-    "this round ends rewrite it with write_file: what is done and verified, the current "
-    "state (services, paths, ports, versions), what to do next, and open problems. Work "
-    "carefully, verify each step, and do not repeat work the notes say is done. Do not ask "
-    "questions unless you are truly blocked.\n\n" + WORK_RULES + "\n"
-    "End your reply with two lines:\n"
-    "GOAL_STATUS: done | continue | blocked   (done = the goal is achieved and verified; "
-    "continue = more work remains; blocked = you need the user, e.g. a decision, credentials "
-    "or physical access)\n"
-    "SPOKEN: one plain sentence under 30 words for a voice assistant: the result if done, your "
-    "question if blocked, progress so far if continuing (no markdown, links or IDs)."
+GOAL_CARD_RULES = (
+    "\n\n---\nHow to work on this card:\n" + WORK_RULES.replace(
+        "Write files with the write_file tool,", "Write files with the write_file tool (find it with tool_search),")
+    + "- If you need the user (a decision, credentials, physical access), block the card with "
+    "kanban_block and make the reason one plain question.\n"
+    "- When the goal is achieved and verified, complete the card. Start the completion summary "
+    "with one plain sentence under 30 words that a voice assistant can read aloud (no markdown, "
+    "links or IDs), then give the details.\n"
 )
 
 
@@ -151,8 +146,12 @@ def _jobs() -> list[dict]:
         except ValueError:
             continue
         if job.get("status") in ACTIVE and job.get("pid") and not _alive(job["pid"]):
-            job.update(status="failed", error="worker exited unexpectedly")
-            _save(job)
+            if job.get("card"):  # the kanban card lives on; restart its watcher
+                _launch(job["id"])
+                job = _load(job["id"])
+            else:
+                job.update(status="failed", error="worker exited unexpectedly")
+                _save(job)
         jobs.append(job)
     return jobs
 
@@ -189,11 +188,6 @@ def _sentence(answer: str) -> str:
             return ""  # not a sentence anyone should hear
     sentence = re.sub(r"<[^>]*>|[*_`#|]+|https?://\S+", "", sentence)
     return re.sub(r"^[^\w\"']+", "", sentence).strip()  # leading emoji
-
-
-def _goal_status(answer: str) -> str | None:
-    found = re.findall(r"GOAL_STATUS:\s*(done|continue|blocked)", answer or "", re.I)
-    return found[-1].lower() if found else None
 
 
 # --- running hermes ----------------------------------------------------------------------
@@ -317,7 +311,7 @@ def _run_hermes(job_id: str, prompt: str, model, provider, steps: int, budget_s:
     text = (answer or "") + "\n" + "\n".join(stderr[-20:])
     ended = _turn_end_reason(progress.session_id) or ""
     if ended.startswith("max_iterations") or re.search(r"maximum iterations|max_iterations", text, re.I):
-        reason = f"used all {steps} steps"
+        reason = f"used all {steps} step{'s' if steps != 1 else ''}"
     elif seconds >= budget_s - 5 or "budget" in ended:
         reason = f"hit the {round(budget_s / 60)}-minute limit"
     elif proc.returncode == 0:
@@ -330,7 +324,7 @@ def _run_hermes(job_id: str, prompt: str, model, provider, steps: int, budget_s:
 # --- launching ---------------------------------------------------------------------------
 
 def _new_job(kind: str, title: str, goal: str) -> dict:
-    running = [j for j in _jobs() if j.get("status") in ACTIVE]
+    running = [j for j in _jobs() if j.get("status") == "running"]  # waiting cards do not count
     if len(running) >= MAX_RUNNING:
         print(f"busy: {len(running)} background jobs already running; try again when one finishes")
         sys.exit(1)
@@ -367,27 +361,57 @@ def cmd_start(args) -> None:
     print(f"started helper {job['id']}: {job['title']} (about {round(HELPER_BUDGET_S / 60)} min)")
 
 
+def _kanban(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run([_hermes(), "kanban", *args], capture_output=True, text=True, timeout=timeout)
+
+
+def _card(card_id: str) -> dict:
+    out = _kanban("show", card_id, "--json")
+    if out.returncode != 0:
+        raise RuntimeError((out.stderr or out.stdout).strip()[-200:] or "kanban show failed")
+    return json.loads(out.stdout)
+
+
 def cmd_goal(args) -> None:
     job = _new_job("goal", args.title, args.goal)
-    _update(job["id"], round=0, round_limit=GOAL_ROUNDS, inbox_read=0)
-    (JOBS / f"{job['id']}.notes.md").write_text(f"# Notes: {job['title']}\n\n(No rounds yet.)\n")
+    command = ["create", job["title"], "--body", job["goal"] + GOAL_CARD_RULES, "--goal",
+               "--goal-max-turns", str(GOAL_TURNS), "--max-runtime", GOAL_RUNTIME,
+               "--assignee", GOAL_ASSIGNEE, "--json"]
+    model, provider = os.environ.get("BG_GOAL_MODEL"), os.environ.get("BG_GOAL_PROVIDER")
+    if model:
+        command += ["--model", model]
+    if provider:
+        command += ["--provider", provider]
+    out = _kanban(*command)
+    try:
+        card_id = json.loads(out.stdout)["id"]
+    except (ValueError, KeyError):
+        _update(job["id"], status="failed", error=(out.stderr or out.stdout).strip()[-300:])
+        print(f"could not create the goal card: {(out.stderr or out.stdout).strip()[-300:]}")
+        sys.exit(1)
+    _update(job["id"], card=card_id)
     _launch(job["id"])
-    print(f"started goal agent {job['id']}: {job['title']} (rounds of up to {round(GOAL_ROUND_S / 60)} min)")
+    print(f"started goal agent {job['id']} (kanban card {card_id}): {job['title']}")
 
 
 def cmd_tell(args) -> None:
     job = _load(args.job_id)
-    with (JOBS / f"{job['id']}.inbox").open("a") as f:
-        f.write(f"[{time.strftime('%H:%M')}] {args.message.strip()}\n")
-    if job.get("kind") == "goal" and job.get("status") in ("waiting", "paused"):
-        _update(job["id"], status="running", mentioned=False,
-                round_limit=job.get("round", 0) + GOAL_ROUNDS, budget_from=time.time())
-        _launch(job["id"])
-        print(f"resumed {job['id']} with your message")
-    elif job.get("status") in ACTIVE:
-        print(f"queued for {job['id']}: a goal agent reads it at its next round; a helper does not read messages")
-    else:
+    if job.get("kind") != "goal":
+        print("helpers do not read messages; cancel it and start a new one with the change")
+        return
+    if job.get("status") not in ACTIVE:
         print(f"{job['id']} is {job.get('status')}; start a new job instead")
+        return
+    card = _card(job["card"])["task"]
+    if card.get("status") == "blocked":
+        out = _kanban("unblock", job["card"], "--reason", args.message.strip())
+        _update(job["id"], status="running", question=None)
+        print(f"passed your answer to {job['id']}; it resumes within a minute" if out.returncode == 0
+              else f"unblock failed: {out.stderr.strip()[-200:]}")
+    else:
+        out = _kanban("comment", job["card"], args.message.strip())
+        print(f"added your message to {job['id']}'s card; the worker reads it on its next turn" if out.returncode == 0
+              else f"comment failed: {out.stderr.strip()[-200:]}")
 
 
 # --- workers -----------------------------------------------------------------------------
@@ -424,73 +448,89 @@ def _run_helper(job: dict) -> None:
     _announce(spoken)
 
 
-def _run_goal(job: dict) -> None:
+def _latest_worker_step(card_id: str) -> str | None:
+    """Last tool line ("┊ 💻 $ mkdir -p ...") from the kanban worker's log."""
+    out = _kanban("log", card_id, "--tail", "6000")
+    lines = [l.strip() for l in out.stdout.splitlines() if l.strip().startswith("┊") and "preparing" not in l]
+    if not lines:
+        return None
+    step = re.sub(r"^┊\s*\S+\s*", "", lines[-1])  # drop the bar and the tool emoji
+    return re.sub(r"\s+\d+(\.\d+)?s$", "", step).strip()[:160] or None  # and the duration
+
+
+def _block_reason(card: dict) -> str:
+    for event in reversed(card.get("events") or []):
+        if "block" in (event.get("kind") or ""):
+            payload = event.get("payload") or {}
+            return str(payload.get("reason") or payload.get("message") or "").strip()
+    return ""
+
+
+def _first_sentence(text: str) -> str:
+    text = re.sub(r"[*_`#|]+|https?://\S+", "", text or "").strip()
+    sentence = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
+    return sentence if len(sentence) <= 220 else sentence[:217].rsplit(" ", 1)[0] + "..."
+
+
+def _watch_goal(job: dict) -> None:
+    """Follow the kanban goal card; announce when it is done, needs the user, or fails."""
     progress = Progress(job["id"])
-    notes = JOBS / f"{job['id']}.notes.md"
-    inbox = JOBS / f"{job['id']}.inbox"
-    model = os.environ.get("BG_GOAL_MODEL") or None
-    provider = os.environ.get("BG_GOAL_PROVIDER") or None
-    budget_from = job.get("budget_from", job["started_ts"])
-    empty_rounds = 0
+    if not job.get("steps"):
+        progress.add(f"card {job['card']} created")
+    last_step, announced_block, errors = None, None, 0
     while True:
-        job = _load(job["id"])
-        n = job.get("round", 0) + 1
-        if n > job.get("round_limit", GOAL_ROUNDS) or time.time() - budget_from > GOAL_BUDGET_S:
-            limit = f"{n - 1} rounds" if n > job.get("round_limit", GOAL_ROUNDS) else f"{round(GOAL_BUDGET_S / 3600)} hours"
-            sentence = _sentence(job.get("last_summary", ""))
-            spoken = f"Your goal agent paused {job['title']} after {limit}" + (f": {sentence}" if sentence else ".")
-            progress.add(f"paused after {limit}")
-            _update(job["id"], status="paused", spoken=spoken, mentioned=False,
-                    seconds=round(time.time() - job["started_ts"]))
-            _announce(spoken)
-            return
-        lines = inbox.read_text().splitlines() if inbox.exists() else []
-        messages, read = lines[job.get("inbox_read", 0):], len(lines)
-        context = f"Goal: {job['goal']}\n\nNotes file ({notes}):\n{notes.read_text() if notes.exists() else '(missing)'}\n"
-        if job.get("last_summary"):
-            context += f"\nYour summary at the end of round {n - 1}:\n{job['last_summary']}\n"
-        if messages:
-            context += "\nNew messages from the user (they take priority):\n" + "\n".join(messages) + "\n"
-        prompt = GOAL_INSTRUCTIONS.format(round=n, steps=GOAL_STEPS, minutes=round(GOAL_ROUND_S / 60), notes=notes)
-        _update(job["id"], round=n, inbox_read=read)
-        progress.add(f"round {n} started")
-        out = _run_hermes(job["id"], f"{prompt}\n\n{context}", model, provider, GOAL_STEPS, GOAL_ROUND_S, progress)
         if _cancelled(job["id"]):
             return
-        status = _goal_status(out["answer"])
-        sentence = _sentence(out["answer"])
-        progress.add(f"round {n} ended: {status or 'no status'}" + (f" ({out['reason']})" if out["reason"] else ""))
-        if out["answer"]:
-            _update(job["id"], last_summary=out["answer"][-3000:])
-            empty_rounds = 0
-        else:
-            empty_rounds += 1
-        if status == "done" and not out["reason"]:
+        try:
+            data = _card(job["card"])
+            errors = 0
+        except Exception as exc:
+            errors += 1
+            if errors >= 15:  # about five minutes without an answer from kanban
+                _update(job["id"], status="failed", error=f"lost track of the card: {exc}"[:300])
+                _announce(f"Your goal agent on {job['title']} stopped reporting.")
+                return
+            time.sleep(WATCH_INTERVAL_S)
+            continue
+        card = data["task"]
+        status = card.get("status")
+        step = _latest_worker_step(job["card"]) if status == "running" else None
+        if step and step != last_step:
+            progress.add(step)
+            last_step = step
+        if status in ("done", "review"):
+            summary = data.get("latest_summary") or card.get("result") or ""
+            sentence = _first_sentence(summary)
             spoken = f"Your goal agent finished {job['title']}" + (f": {sentence}" if sentence else ".")
-            _update(job["id"], status="done", answer=out["answer"], spoken=spoken, mentioned=False,
+            progress.add("finished")
+            _update(job["id"], status="done", answer=summary, spoken=spoken, mentioned=False,
                     seconds=round(time.time() - job["started_ts"]))
             _announce(spoken)
+            return
+        if status == "archived":
+            _update(job["id"], status="cancelled", mentioned=True)
             return
         if status == "blocked":
-            spoken = f"Your goal agent on {job['title']} needs you" + (f": {sentence}" if sentence else ".")
-            _update(job["id"], status="waiting", question=sentence, spoken=spoken, mentioned=False)
-            _announce(spoken)
-            return
-        if empty_rounds >= 2:
-            reason = out["reason"] or "no answer"
-            spoken = f"Your goal agent could not continue {job['title']}."
-            progress.add(f"failed: {reason}")
-            _update(job["id"], status="failed", error=reason, spoken=spoken, mentioned=False,
-                    seconds=round(time.time() - job["started_ts"]))
-            _announce(spoken)
-            return
-        # continue, no status, or a round that ran out of steps or time: next round
+            reason = _block_reason(data) or card.get("last_failure_error") or "it is blocked"
+            if reason != announced_block:
+                failed = bool(card.get("last_failure_error")) and not _block_reason(data)
+                spoken = (f"Your goal agent on {job['title']} hit an error and stopped." if failed
+                          else f"Your goal agent on {job['title']} needs you: {_first_sentence(reason)}")
+                progress.add(f"blocked: {reason}"[:200])
+                _update(job["id"], status="waiting", question=reason[:300], spoken=spoken, mentioned=False)
+                _announce(spoken)
+                announced_block = reason
+        elif status in ("ready", "running", "todo", "scheduled", "triage"):
+            if _load(job["id"]).get("status") == "waiting":
+                _update(job["id"], status="running", question=None)
+            announced_block = None
+        time.sleep(WATCH_INTERVAL_S)
 
 
 def cmd_run(args) -> None:
     job = _update(args.job_id, pid=os.getpid())
     try:
-        (_run_goal if job.get("kind") == "goal" else _run_helper)(job)
+        (_watch_goal if job.get("kind") == "goal" else _run_helper)(job)
     except Exception as exc:  # report instead of dying silently
         if not _cancelled(job["id"]):
             _update(job["id"], status="failed", error=f"worker error: {exc}"[:300],
@@ -513,8 +553,8 @@ def cmd_list(_args) -> None:
         took = _elapsed(job)
         took = f" ({'for ' if job['status'] in ACTIVE else ''}{took})" if took else ""
         extra = ""
-        if job.get("kind") == "goal" and job.get("round"):
-            extra += f" | round {job['round']}"
+        if job.get("card"):
+            extra += f" | card {job['card']}"
         if job["status"] in ACTIVE and job.get("last_step"):
             ago = round(time.time() - job.get("last_step_ts", time.time()))
             extra += f" | {job.get('steps', 0)} steps, latest {ago} s ago: {job['last_step']}"
@@ -527,10 +567,12 @@ def cmd_list(_args) -> None:
 
 def cmd_cancel(args) -> None:
     job = _load(args.job_id)
-    if job.get("status") not in ACTIVE + ("waiting", "paused"):
+    if job.get("status") not in ACTIVE:
         print(f"{job['id']} is already {job.get('status')}")
         return
     was_running = job.get("status") in ACTIVE
+    if job.get("card"):
+        _kanban("archive", job["card"])
     _update(job["id"], status="cancelled", mentioned=True,
             seconds=round(time.time() - job.get("started_ts", time.time())))
     if was_running:
@@ -545,7 +587,7 @@ def cmd_show(args) -> None:
     job = _load(args.job_id)
     log = JOBS / f"{job['id']}.progress"
     steps = log.read_text().splitlines() if log.exists() else []
-    round_info = f", round {job['round']}" if job.get("kind") == "goal" else ""
+    round_info = f", kanban card {job['card']}" if job.get("card") else ""
     print(f"{job['title']} [{_label(job)}, {job['status']}{round_info}] started {job['started']}, "
           f"{len(steps)} steps logged")
     print(f"goal: {job['goal']}")
@@ -555,13 +597,18 @@ def cmd_show(args) -> None:
         print("recent steps:")
         for step in steps[-args.steps:]:
             print(f"  {step}")
-    notes = JOBS / f"{job['id']}.notes.md"
-    if notes.exists():
-        print("notes:\n" + notes.read_text().strip())
+    if job.get("card"):
+        try:
+            data = _card(job["card"])
+            print(f"card status: {data['task'].get('status')}")
+            if data.get("comments"):
+                print("card comments:")
+                for c in data["comments"][-5:]:
+                    print(f"  {c.get('author', '?')}: {str(c.get('body') or c.get('text') or '')[:300]}")
+        except Exception as exc:
+            print(f"card unavailable: {exc}")
     if job.get("answer"):
         print("result:\n" + job["answer"])
-    elif job.get("last_summary"):
-        print("latest round summary:\n" + job["last_summary"])
     if job.get("error"):
         print(f"stopped because: {job['error']}")
 

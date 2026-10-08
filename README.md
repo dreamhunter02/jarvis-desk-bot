@@ -20,8 +20,9 @@ multi-minute jobs without leaving you in silence.
   on it." during long steps.
 - **Background helpers and goal agents.** Say "spin off a helper to…" and JARVIS starts the job,
   answers right away, and announces the result when it finishes. Quick jobs go to a *helper*
-  (about 10 minutes); long goals such as deployments and benchmarks go to a *goal agent* that
-  works in rounds for hours, keeps notes between rounds, and asks you when it is blocked. Ask
+  (about 10 minutes); long goals such as deployments and benchmarks go to a *goal agent*, a
+  Hermes kanban goal card that works for hours in its own session and asks you when it is
+  blocked. Ask
   "what's running?" or "how is it going?" at any time, answer its questions, or cancel a job.
 - **Stays in the conversation.** No timeouts: the robot keeps listening until you say "bye bye",
   "good bye" or "bye jarvis".
@@ -52,8 +53,9 @@ multi-minute jobs without leaving you in silence.
    any background jobs.
 3. Hermes runs its tools and skills and writes a short, speakable answer (rules in `SOUL.md`).
 4. Background work goes to the **background-task** skill: a *helper* is one detached Hermes run;
-   a *goal agent* is a series of runs (rounds) that carry their state in a notes file. Both log
-   each step and announce a one-sentence result through the robot when done.
+   a *goal agent* is a Hermes kanban card in goal mode, run by the gateway's kanban dispatcher
+   and checked after every turn by Hermes's goal judge. Both log each step and announce a
+   one-sentence result through the robot when done.
 
 Read [docs/design-notes.md](docs/design-notes.md) for the problems each piece solves and the
 measurements behind the defaults.
@@ -166,13 +168,15 @@ Spoken lines per kind of tool live in `TOOL_LINES` in
 | `BG_ANNOUNCE_CMD` | `python3 ~/.hermes/speech/speech.py enqueue --text` | Command that speaks a result; the text is appended as the last argument |
 | `BG_TASK_MAX_RUNNING` | `3` | Jobs that can run at once (both kinds) |
 | `BG_HELPER_BUDGET_S` / `BG_HELPER_STEPS` | `600` / `60` | A helper's time and step limits |
-| `BG_GOAL_ROUND_S` / `BG_GOAL_STEPS` | `1800` / `150` | A goal agent's limits per round |
-| `BG_GOAL_ROUNDS` / `BG_GOAL_BUDGET_S` | `8` / `14400` | Rounds and total time before a goal agent pauses |
-| `BG_GOAL_MODEL` / `BG_GOAL_PROVIDER` | Hermes's main model | Model for goal agents |
-| `BG_TASK_DIR` | `~/.hermes/background` | Job records, step logs and goal notes |
+| `BG_GOAL_TURNS` / `BG_GOAL_RUNTIME` | `30` / `4h` | A goal card's goal-loop turns and runtime cap |
+| `BG_GOAL_MODEL` / `BG_GOAL_PROVIDER` | the kanban profile's model | Model for goal agents |
+| `BG_GOAL_ASSIGNEE` | `default` | Kanban profile that runs goal cards |
+| `BG_TASK_DIR` | `~/.hermes/background` | Job records and step logs |
 
 Helpers use the subagent model from `delegation.model` in `~/.hermes/config.yaml`. Goal agents
-use the main model unless `BG_GOAL_MODEL` is set; pick one with reliable tool calling.
+need the kanban dispatcher (embedded in the gateway by default) and a goal judge that returns
+reliable JSON: set `auxiliary.goal_judge` (see `hermes/config.example.yaml`). Pick goal and judge
+models with reliable tool calling.
 
 **Conversation length** (`data/.config.yaml`): `listen_silence_timeout: 0` keeps a
 conversation open until an end phrase. The robot then also hears nearby conversations; say
@@ -189,7 +193,7 @@ hermes/
   memories/USER.md               facts about you (template)
   skills/task-manager/           Google Tasks skill and CLI
   skills/tasks-reminders/        reminders tied to tasks
-  skills/background-task/        helpers and goal agents: start, goal, tell, list, show, cancel
+  skills/background-task/        helpers and kanban goal agents: start, goal, tell, list, show, cancel
 xiaozhi/
   apply.py                       installer for xiaozhi-server
   config.example.yaml            provider and conversation settings
@@ -208,6 +212,7 @@ docs/
 | A helper never reports back | `bg_task.py list`; check `BG_ANNOUNCE_CMD`, and that `systemd-run --user` works for the gateway's user |
 | A job stopped early | `bg_task.py show JOB_ID` gives the reason ("used all 60 steps", "hit the 10-minute limit") and the partial result; long jobs belong to a goal agent |
 | A goal agent writes `<tool_call>` text instead of acting | Its model's server is not parsing tool calls; set `BG_GOAL_MODEL` to a model with working tool calling |
+| A goal card never starts, or pauses at once | `hermes kanban stats` and the gateway log (`kanban dispatcher`); a judge that cannot return JSON pauses the goal, so set `auxiliary.goal_judge` |
 | Helpers die when Hermes restarts | They should run as `jarvis-bg-*.scope` units: `systemctl --user list-units 'jarvis-bg-*'` |
 | JARVIS says it did something it did not | Keep the tool-use guards on and reasoning at `high` (see `hermes/config.example.yaml`) |
 | "I have no subagent tool" | Remove `delegate_task` from `tools.tool_search.defer` |

@@ -1,6 +1,6 @@
 ---
 name: background-task
-description: Use when the user asks to spin off a helper, subagent or agent, to run something in the background, or for any job that would take more than about a minute. Quick jobs go to a helper (up to about 10 minutes); long goals (deployments, benchmarks, multi-step projects) go to a goal agent that works in rounds for hours. Both start detached so you can reply at once, and both report back when done.
+description: Use when the user asks to spin off a helper, subagent or agent, to run something in the background, or for any job that would take more than about a minute. Quick jobs go to a helper (up to about 10 minutes); long goals (deployments, benchmarks, multi-step projects) go to a goal agent, a Hermes kanban goal card that works for hours in its own session. Both start detached so you can reply at once, and both report back when done.
 ---
 
 # Background work: helpers and goal agents
@@ -12,9 +12,10 @@ short subtask whose result you need for the current answer. Everything else goes
 | | Helper | Goal agent |
 |---|---|---|
 | For | One-off lookups, comparisons, quick checks and fixes | Deployments, benchmarks, evaluations, multi-step projects |
-| Budget | About 10 minutes and 60 steps, one run | Rounds of up to 30 minutes, several hours in total |
-| Memory | None beyond the goal you write | A notes file it rewrites each round, plus your messages |
-| Ends | done, or stopped with how far it got | done, waiting for the user (blocked), or paused at its limit |
+| Runs as | One Hermes run with the subagent model | A kanban card in goal mode, in its own Hermes session |
+| Budget | About 10 minutes and 60 steps | Up to 30 goal turns and 4 hours per run |
+| Done when | It answers | Hermes's goal judge agrees the goal is met |
+| Ends | done, or stopped with how far it got | done, waiting for the user (blocked card), or failed |
 
 If unsure, use a helper for anything you would finish in a few minutes yourself, and a
 goal agent for anything that installs, deploys, downloads large files or runs a
@@ -46,20 +47,21 @@ python3 ~/.hermes/skills/background-task/scripts/bg_task.py cancel JOB_ID
 
 Every step (tool call, failed tool, note between tools) is logged automatically. On the
 robot, each user message ends with a bracketed `[Background jobs ...]` note listing
-running jobs with their latest step (and round, for goal agents), jobs waiting for the
+running jobs with their latest step, goal agents waiting for the
 user with their question, and jobs that finished since the last turn with their result.
 Use it to answer "what's running?" or "how is it going?" without a tool call: describe
 the latest step in plain words, and say if it has been quiet for a long time. For more,
-run `show JOB_ID` (recent steps, the goal agent's notes, the result or latest summary).
+run `show JOB_ID` (recent steps, the card's status and comments, and the result).
 Do not read the note aloud unprompted; outcomes were already announced.
 
 ## Answering and steering
 
-- A goal agent that is **waiting** asked the user something (it was announced). When the
-  user answers, pass the answer on with `tell JOB_ID "ANSWER"`; it resumes at once.
-- To change direction or add information, `tell` a running goal agent; it reads the
-  message at its next round. Helpers do not read messages: cancel and restart instead.
-- A **paused** goal agent reached its round or time limit; `tell` it to continue.
+- A goal agent that is **waiting** blocked its card with a question (it was announced).
+  When the user answers, pass the answer on with `tell JOB_ID "ANSWER"`; the card is
+  unblocked and the worker resumes within a minute.
+- To change direction or add information, `tell` a running goal agent; the message is
+  added to its card and read on the worker's next turn. Helpers do not read messages:
+  cancel and restart instead.
 - A **stopped** helper ran out of steps or time; its partial result is in `show`. Offer to
   continue the remaining work as a goal agent.
 - To stop a job, `cancel JOB_ID` and confirm in one sentence.

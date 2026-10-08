@@ -33,3 +33,12 @@ delegation:
   provider: deepinfra
   base_url: https://api.deepinfra.com/v1/openai
   api_mode: chat_completions
+
+# Judge for /goal and kanban goal cards (goal agents). It must return strict JSON; the
+# default ("auto") is the main model, which may not. Three bad verdicts pause the goal.
+auxiliary:
+  goal_judge:
+    provider: deepinfra
+    model: deepseek-ai/DeepSeek-V4.1-Flash
+    base_url: https://api.deepinfra.com/v1/openai
+    timeout: 60
