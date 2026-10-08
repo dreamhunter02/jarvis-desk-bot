@@ -34,6 +34,9 @@ python3 ~/.hermes/skills/background-task/scripts/bg_task.py cancel JOB_ID
 
 ## Starting one
 
+0. Ask first. Unless the user explicitly asked for a helper or goal agent in this request, ask
+   one short question before starting one ("Should I start a goal agent for that, or a quick
+   helper?") and wait for the answer.
 1. Write a self-contained goal: the job starts with no memory of this conversation, so
    include names, hosts, paths, versions, dates and what "done" means. Resolve
    references like "this task" first (for example, read the task from Google Tasks).
