@@ -13,7 +13,10 @@ It also:
   * drops CJK text, so an English voice never reads Chinese from a drifting model;
   * removes its own progress lines from the history sent back to Hermes;
   * appends a short status of background-task jobs (running, latest step, newly
-    finished) to the outgoing copy of the latest user message.
+    finished) to the outgoing copy of the latest user message;
+  * relays Hermes's command approvals: on ``event: approval.request`` it asks the user
+    aloud, keeps the Hermes stream open, and sends the spoken yes or no to
+    ``POST /v1/runs/{run_id}/approval`` before resuming the same turn.
 
 Updates are yielded as ordinary text, so xiaozhi speaks them through its normal TTS
 path ahead of the answer. Config (data/.config.yaml, under the LLM entry for Hermes):
@@ -157,6 +160,52 @@ def strip_progress(dialogue: list) -> list:
     return cleaned
 
 
+# --- command approvals ---------------------------------------------------------------
+# Hermes holds a flagged command until it hears back (approvals.timeout, 300 s by default,
+# then it denies). The run waits here between the spoken question and the user's answer.
+PENDING_APPROVALS = {}  # xiaozhi session id -> parked run
+APPROVAL_WAIT_S = 290
+_YES = re.compile(r"\b(?:yes|yeah|yep|yup|sure|ok(?:ay)?|go ahead|do it|approve[ds]?|allow(?:ed)?|fine|"
+                  r"run it|proceed|go for it|affirmative)\b", re.I)
+_NO = re.compile(r"\b(?:no|nope|nah|don'?t|do not|stop|deny|denied|cancel|skip|never|wait|hold on|not now)\b", re.I)
+_FOR_SESSION = re.compile(r"\b(?:always|from now on|for (?:this|the) (?:session|conversation)|for the rest)\b", re.I)
+
+
+def approval_question(event: dict) -> str:
+    """One short spoken question for an approval.request event.
+
+    Descriptions from Hermes's security scan are long ("Security scan — [HIGH] Pipe to
+    interpreter: curl | sh: Command pipes output ... Safer: run ..."); keep the severity and
+    the rule's name.
+    """
+    description = re.sub(r"\s+", " ", str(event.get("description") or "")).strip()
+    scan = re.search(r"\[(\w+)\]\s*([^:]+)", description)
+    if scan:
+        severity, rule = scan.group(1).lower(), scan.group(2).strip().lower()
+        what = f"a {severity}-risk command: {rule}"
+    elif description:
+        first = re.split(r"(?<=[.!?:])\s", description, maxsplit=1)[0].rstrip(".:")
+        first = re.sub(r"[`*_#|]", "", first)
+        what = f"a command: {first if len(first) <= 90 else first[:87].rsplit(' ', 1)[0] + '...'}"
+    else:
+        command = str(event.get("command") or "").strip()
+        words = [w for w in command.split() if "=" not in w.split("/")[0]]  # skip VAR=value prefixes
+        what = f"a command with {Path(words[0]).name}" if words else "a command"
+    return f"JARVIS needs your OK to run {what}. Should it go ahead?"
+
+
+def approval_choice(answer: str, choices: list) -> str | None:
+    """Map a spoken answer to an approval choice, or None if it is unclear."""
+    yes, no = bool(_YES.search(answer or "")), bool(_NO.search(answer or ""))
+    if yes == no:
+        return None
+    if no:
+        return "deny"
+    if _FOR_SESSION.search(answer) and "session" in choices:
+        return "session"
+    return "once"
+
+
 class LLMProvider(OpenAIProvider):
     def __init__(self, config):
         super().__init__(config)
@@ -196,6 +245,8 @@ class LLMProvider(OpenAIProvider):
                     if event == "hermes.tool.progress":
                         if payload.get("status") == "running":
                             out.put(("tool", (payload.get("tool", ""), payload.get("label", ""))))
+                    elif event == "approval.request":
+                        out.put(("approval", payload))
                     elif event is None:
                         choices = payload.get("choices") or []
                         delta = (choices[0].get("delta") or {}) if choices else {}
@@ -205,21 +256,68 @@ class LLMProvider(OpenAIProvider):
             error = exc
         out.put(("done", error))
 
-    def _respond(self, dialogue):
+    def _respond(self, session_id, dialogue):
         dialogue = strip_progress(self.normalize_dialogue(dialogue))
         request = next((m.get("content") for m in reversed(dialogue) if m.get("role") == "user"), "")
         request = request if isinstance(request, str) else ""
+        parked = PENDING_APPROVALS.pop(session_id, None)
+        if parked and time.monotonic() - parked["asked_at"] < APPROVAL_WAIT_S:
+            yield from self._resume_after_approval(session_id, parked, request)
+            return
         dialogue = with_background_note(dialogue)
         now = time.monotonic()
         # Spoken-update state for this request: ack, per-kind tool lines, "still working" lines.
         state = {"started": now, "last_spoken": now, "acked": False, "said": set(), "stills": 0}
         result = {"answer": "", "tools": 0}
         yield from self._run(dialogue, request, state, result)
+        yield from self._park_if_approval(session_id, request, state, result)
 
-    def _run(self, dialogue, request, state, result):
-        """Stream one Hermes turn; record its answer text and tool count in ``result``."""
-        out: queue.Queue = queue.Queue()
-        threading.Thread(target=self._stream_events, args=(dialogue, out), daemon=True).start()
+    def _park_if_approval(self, session_id, request, state, result):
+        """The turn stopped at an approval request: ask the user and keep the run open."""
+        event = result.get("approval")
+        if not event:
+            return
+        PENDING_APPROVALS[session_id] = {
+            "out": result["out"], "event": event, "request": request, "state": state,
+            "asked_at": time.monotonic(),
+        }
+        logger.bind(tag=TAG).info(f"Hermes approval requested: {event.get('description')!r} {event.get('command')!r}")
+        yield " " + approval_question(event)
+
+    def _resume_after_approval(self, session_id, parked, answer):
+        event = parked["event"]
+        choice = approval_choice(answer, event.get("choices") or ["once", "deny"])
+        if choice is None:
+            parked["asked_at"] = time.monotonic()
+            PENDING_APPROVALS[session_id] = parked
+            yield "Sorry, should JARVIS run that command? Please say yes or no."
+            return
+        body = {"choice": choice}
+        if event.get("request_id"):
+            body["request_id"] = event["request_id"]
+        url = f"{self.base_url.rstrip('/')}/runs/{event.get('run_id')}/approval"
+        try:
+            reply = httpx.post(url, json=body, headers={"Authorization": f"Bearer {self.api_key}"}, timeout=10)
+            reply.raise_for_status()
+        except Exception as exc:
+            logger.bind(tag=TAG).error(f"Hermes approval reply failed: {exc}")
+            yield "Sorry, I couldn't pass your answer on; that request has expired."
+            return
+        logger.bind(tag=TAG).info(f"Hermes approval answered: {choice}")
+        yield ("Okay, going ahead. " if choice != "deny" else "Okay, I've told JARVIS not to run it. ")
+        state = parked["state"]
+        state["last_spoken"] = time.monotonic()
+        result = {"answer": "", "tools": 0}
+        yield from self._run(None, parked["request"], state, result, out=parked["out"])
+        yield from self._park_if_approval(session_id, parked["request"], state, result)
+
+    def _run(self, dialogue, request, state, result, out=None):
+        """Stream one Hermes turn (or continue a parked one); record its answer text and tool
+        count in ``result``, and the approval event if the turn stops to ask for one."""
+        if out is None:
+            out = queue.Queue()
+            threading.Thread(target=self._stream_events, args=(dialogue, out), daemon=True).start()
+        result["out"] = out
         answering = False
         thinking = False  # inside <think>...</think>
         dropped_cjk = False
@@ -247,6 +345,9 @@ class LLMProvider(OpenAIProvider):
                 elif not answering and dropped_cjk:
                     yield NOT_CAUGHT
                 return
+            if kind == "approval":
+                result["approval"] = value
+                return  # the stream stays open; _park_if_approval asks the user
             if kind == "tool":
                 result["tools"] += 1
                 # Text before a tool call was a preamble ("I'll delegate that."), not the
@@ -285,9 +386,9 @@ class LLMProvider(OpenAIProvider):
                 yield text
 
     def response(self, session_id, dialogue, **kwargs):
-        yield from self._respond(dialogue)
+        yield from self._respond(session_id, dialogue)
 
     def response_with_functions(self, session_id, dialogue, functions=None, **kwargs):
         # Hermes runs its own tools; xiaozhi's local functions are not offered to it.
-        for text in self._respond(dialogue):
+        for text in self._respond(session_id, dialogue):
             yield text, None

@@ -24,6 +24,9 @@ multi-minute jobs without leaving you in silence.
   Hermes kanban goal card that works for hours in its own session and asks you when it is
   blocked. Ask
   "what's running?" or "how is it going?" at any time, answer its questions, or cancel a job.
+- **Asks before risky commands.** When Hermes's safety check holds a command for approval, the
+  robot asks ("JARVIS needs your OK to run a high-risk command: pipe to interpreter. Should it go
+  ahead?") and your spoken yes or no goes back to Hermes, which carries on with the same task.
 - **Stays in the conversation.** No timeouts: the robot keeps listening until you say "bye bye",
   "good bye" or "bye jarvis".
 - **Chimes.** A rising "ba-ding" when it hears the wake word, a falling "tung" when it goes to sleep.
@@ -144,6 +147,7 @@ Say "Jarvis", wait for the chime, then: "What's on my list today?"
 | "Use the int8 weights" (after an agent asks) | Passes your answer on; the agent resumes |
 | "What did the helper find?" | The saved result of a finished job |
 | "Cancel the deployment" | Stops a job |
+| "Yes" / "Yes, for this session" / "No" (after an approval question) | Allows the command once, for the session, or blocks it |
 | "Bye bye", "good bye", "bye jarvis" | Chime, and the robot goes to sleep |
 
 ## Configuration
@@ -218,6 +222,7 @@ docs/
 | Helpers die when Hermes restarts | They should run as `jarvis-bg-*.scope` units: `systemctl --user list-units 'jarvis-bg-*'` |
 | JARVIS says it did something it did not | Keep the tool-use guards on and reasoning at `high` (see `hermes/config.example.yaml`) |
 | "I have no subagent tool" | Remove `delegate_task` from `tools.tool_search.defer` |
+| JARVIS goes quiet in the middle of a task | It may be waiting on a command approval that never reached you (Hermes denies after `approvals.timeout`, 300 s). The provider relays `approval.request` events; check the xiaozhi log for "Hermes approval requested" |
 | Replies in another language | Keep the English rule in `SOUL.md`; the provider already drops CJK text |
 
 ## Contributing

@@ -36,6 +36,12 @@ Measured on "What are my open tasks right now?":
 The trade-off: the robot listens until told to stop, so a nearby meeting or video is sent to
 the agent too. Say "bye bye" first.
 
+## Command approvals
+
+| Problem | Fix |
+|---|---|
+| A request froze for six minutes and ended with nothing said. Hermes's safety check held a command for the user's approval, sent as `event: approval.request` in the chat stream, which the provider ignored; the robot had no way to answer, and Hermes denied it after its 300 s timeout. | The provider relays approvals: it asks aloud, keeps the Hermes stream open, maps the spoken answer ("yes", "yes, for this session", "no") to `once`, `session` or `deny`, posts it to `/v1/runs/{run_id}/approval`, and resumes the same turn. Unclear answers are asked again. |
+
 ## Agent behaviour (Hermes)
 
 | Problem | Fix |
