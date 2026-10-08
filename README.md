@@ -173,6 +173,8 @@ Spoken lines per kind of tool live in `TOOL_LINES` in
 | `BG_GOAL_ASSIGNEE` | `default` | Kanban profile that runs goal cards |
 | `BG_TASK_DIR` | `~/.hermes/background` | Job records and step logs |
 
+These can also be set in `~/.hermes/.env`; the script reads `BG_*` keys (and only those) from it.
+
 Helpers use the subagent model from `delegation.model` in `~/.hermes/config.yaml`. Goal agents
 need the kanban dispatcher (embedded in the gateway by default) and a goal judge that returns
 reliable JSON: set `auxiliary.goal_judge` (see `hermes/config.example.yaml`). Pick goal and judge

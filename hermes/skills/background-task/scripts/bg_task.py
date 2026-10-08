@@ -27,7 +27,7 @@ fails.
 Results are announced through a speech command. A record's `mentioned` flag is set once a
 client (the xiaozhi provider) has shown the outcome to the main agent.
 
-Environment:
+Environment (also read from ~/.hermes/.env, BG_* keys only):
     BG_TASK_DIR          job records (default ~/.hermes/background)
     BG_ANNOUNCE_CMD      speech command; the text is appended as the last argument
                          (default: python3 ~/.hermes/speech/speech.py enqueue --text)
@@ -54,6 +54,24 @@ import uuid
 from pathlib import Path
 
 HOME = Path.home()
+
+
+def _load_settings() -> None:
+    """BG_* settings from ~/.hermes/.env, unless already set: the script may run from a tool
+    that does not pass the gateway's environment through. Other keys are never read."""
+    env = HOME / ".hermes/.env"
+    try:
+        lines = env.read_text().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        key, sep, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        if sep and key.startswith("BG_") and key not in os.environ:
+            os.environ[key] = value.strip().strip("\"'")
+
+
+_load_settings()
 JOBS = Path(os.environ.get("BG_TASK_DIR", HOME / ".hermes/background"))
 DEFAULT_ANNOUNCE = f"python3 {HOME / '.hermes/speech/speech.py'} enqueue --text"
 MAX_RUNNING = int(os.environ.get("BG_TASK_MAX_RUNNING", "3"))
