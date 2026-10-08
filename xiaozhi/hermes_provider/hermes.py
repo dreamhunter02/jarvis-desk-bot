@@ -53,8 +53,9 @@ TOOL_LINES = (
     # the start/list/cancel commands below get their own lines.
     (r"skill_view\s+\S*background-task", None),
     # Helpers before "tasks": the script path and goal text often contain "task".
-    (r"bg_task\.py (?:list|show|cancel)", "Checking on your helpers."),
+    (r"bg_task\.py (?:list|show|cancel|tell)", "Checking on your helpers."),
     (r"bg_task\.py start", "Starting a helper."),
+    (r"bg_task\.py goal", "Starting a goal agent."),
     (r"bg_task|background-task/", "Checking on your helpers."),
     (r"delegate_task|subagent", "Handing part of this to a helper."),
     (r"\btasks?\b|\bto-?dos?\b|\bto do\b", "Checking your tasks."),
