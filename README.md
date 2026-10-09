@@ -274,6 +274,8 @@ docs/
 | A goal agent writes `<tool_call>` text instead of acting | Its model's server is not parsing tool calls; set `BG_GOAL_MODEL` to a model with working tool calling |
 | A goal card never starts, or pauses at once | `hermes kanban stats` and the gateway log (`kanban dispatcher`); a judge that cannot return JSON pauses the goal, so set `auxiliary.goal_judge` |
 | Helpers die when Hermes restarts | They should run as `jarvis-bg-*.scope` units: `systemctl --user list-units 'jarvis-bg-*'` |
+| The robot starts listening again while JARVIS should be working | The model replied with a promise ("Let me search for that") and no tool call, so the turn ended. Set `tool_use_enforcement: true` and give the main model at least `low` reasoning |
+| Helpers fail with a 401 / "rejected your API key" | `delegation` has a `base_url`, so the subagent reuses the main model's key. Remove it and define the provider under `providers:` with `key_env` |
 | JARVIS says it did something it did not | Keep the tool-use guards on and reasoning at `high` (see `hermes/config.example.yaml`) |
 | "I have no subagent tool" | Remove `delegate_task` from `tools.tool_search.defer` |
 | JARVIS goes quiet in the middle of a task | It may be waiting on a command approval that never reached you (Hermes denies after `approvals.timeout`, 300 s). The provider relays `approval.request` events; check the xiaozhi log for "Hermes approval requested" |

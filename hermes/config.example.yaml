@@ -4,6 +4,18 @@ model:
   default: deepseek-ai/DeepSeek-V4.1-Flash   # ~1 s per agent step on DeepInfra (GLM-5.3-Flash took 17-49 s)
   provider: deepinfra
   base_url: https://api.deepinfra.com/v1/openai
+# Tested alternative: NVIDIA Nemotron 3.5 Super as the main model. Give it at least `low`
+# reasoning (see reasoning_overrides): with `none` it answers "let me search for that" or
+# asks a question instead of calling the tool.
+
+# Named provider, so anything pinned to deepinfra (subagents, fallback, goal judge) finds its
+# key even when the main model is on another provider.
+providers:
+  deepinfra:
+    name: deepinfra
+    base_url: https://api.deepinfra.com/v1/openai
+    key_env: DEEPINFRA_API_KEY
+    api_mode: chat_completions
 
 # Used only when the main model errors (e.g. 429 "Model busy") after its retries.
 # A slow but successful reply never triggers a fallback.
@@ -18,10 +30,11 @@ agent:
   reasoning_overrides:
     deepseek-ai/DeepSeek-V4.1-Flash: high  # none made it answer before checking; high adds ~0.4 s/step
     zai-org/GLM-5.3-Flash: low
-  # Keep these ON for DeepSeek and GLM. With them off, DeepSeek ends turns with a promise
-  # ("give me a moment to pull them together") and no tool call, and claims tasks were added
-  # without adding them.
-  tool_use_enforcement: auto
+    nvidia/nvidia/nemotron-3.5-super-vl-preview: low  # none: no tool calls; medium: slower, no better
+  # Keep these ON. With them off, DeepSeek ends turns with a promise ("give me a moment to
+  # pull them together") and no tool call, and claims tasks were added without adding them.
+  # `true`, not `auto`: auto only covers some model families (not Nemotron).
+  tool_use_enforcement: true
   execution_guidance: auto
   task_completion_guidance: true
 
@@ -30,8 +43,7 @@ agent:
 delegation:
   max_iterations: 30
   model: XiaomiMiMo/MiMo-V2.6-Flash   # 3-6 s per step; GLM-5.3-Flash took 31-41 s on DeepInfra
-  provider: deepinfra
-  base_url: https://api.deepinfra.com/v1/openai
+  provider: deepinfra   # no base_url here: with one, the subagent reuses the MAIN model's key (401)
   api_mode: chat_completions
 
 # Judge for /goal and kanban goal cards (goal agents). It must return strict JSON; the
