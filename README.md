@@ -4,7 +4,54 @@
 Talk to your agent, hear what it is doing while it works, and hand long jobs to background
 helpers that report back when they are done.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"/></a>
+  <a href="https://github.com/dreamhunter02/jarvis-desk-bot/stargazers"><img src="https://img.shields.io/github/stars/dreamhunter02/jarvis-desk-bot?style=social" alt="GitHub stars"/></a>
+  <a href="https://x.com/vineethkalluru/status/2108388089731436546"><img src="https://img.shields.io/badge/X-launch%20post-black?logo=x&logoColor=white" alt="Launch post on X"/></a>
+</p>
+
+**Stack:** ESP32 desk robot → xiaozhi-server (Parakeet ASR + Kokoro TTS, all local) → any Hermes agent.
+
+<p align="center">
+  <a href="docs/media/jarvis-demo.mp4"><img src="docs/media/demo-poster.jpg" width="400" alt="Watch the 1-minute demo (sound on)"/></a>
+</p>
+
+## See it in action
+
+Real recordings of the robot on my desk; skipped waits are marked (+20 s). Click a clip to play it with sound, which you need for the chimes.
+
+<table>
+  <tr>
+    <td width="33%" align="center"><b>Wake chime</b></td>
+    <td width="33%" align="center"><b>Talks while it works</b></td>
+    <td width="33%" align="center"><b>Background helpers</b></td>
+  </tr>
+  <tr>
+    <td><a href="docs/media/wake-chime.mp4"><img src="docs/media/wake-chime.webp" width="100%" alt="Wake chime demo"/></a></td>
+    <td><a href="docs/media/thinking.mp4"><img src="docs/media/thinking.webp" width="100%" alt="Spoken progress demo"/></a></td>
+    <td><a href="docs/media/helper.mp4"><img src="docs/media/helper.webp" width="100%" alt="Background helper demo"/></a></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Say "Jarvis", hear a rising <i>ba-ding</i>, then just talk.</sub></td>
+    <td align="center"><sub>No dead air: progress lines and "thinking" eyes while tools run.</sub></td>
+    <td align="center"><sub>Long jobs go to a helper. JARVIS answers right away.</sub></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center"><b>Reports back honestly</b></td>
+    <td width="33%" align="center"><b>Google Tasks</b></td>
+    <td width="33%" align="center"><b>Bye bye + end chime</b></td>
+  </tr>
+  <tr>
+    <td><a href="docs/media/reports-back.mp4"><img src="docs/media/reports-back.webp" width="100%" alt="Helper result demo"/></a></td>
+    <td><a href="docs/media/tasks.mp4"><img src="docs/media/tasks.webp" width="100%" alt="Google Tasks demo"/></a></td>
+    <td><a href="docs/media/end-chime.mp4"><img src="docs/media/end-chime.webp" width="100%" alt="End chime demo"/></a></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Helper results, failures included, with what is still safe.</sub></td>
+    <td align="center"><sub>Notes a task on the right list, by voice.</sub></td>
+    <td align="center"><sub>Stays in the conversation until you say bye, then a falling <i>tung</i>.</sub></td>
+  </tr>
+</table>
 
 JARVIS Desk Bot is a set of drop-in changes for three open-source projects: the robot's
 [ESP-Brookesia](https://github.com/espressif/esp-brookesia) firmware,
@@ -70,7 +117,7 @@ measurements behind the defaults.
 | Robot | ESP32-S3 desk robot running the ESP-Brookesia `chatbot` example with the xiaozhi agent (`release/v0.7`), ESP-IDF 5.5 |
 | Voice server | xiaozhi-esp32-server with a local ASR (Parakeet) and an English TTS (Kokoro) |
 | Agent | Hermes agent with the API server enabled |
-| Models | An OpenAI-compatible provider; defaults use DeepInfra (DeepSeek V4.1 Flash, GLM 5.3 Flash, MiMo V2.6 Flash) |
+| Models | Any OpenAI-compatible provider with reliable tool calling. Tested: Nemotron 3.5 Super VL (main), DeepSeek V4.1 Flash (fallback, goal agents, goal judge), MiMo V2.6 Flash (helpers) |
 | Tasks | A Google account and an OAuth token with the Google Tasks scope |
 | Host | Linux with a systemd user session (background helpers run as user scopes) |
 | Announcements | A command that speaks text on the robot (`BG_ANNOUNCE_CMD`, see below) |
@@ -207,6 +254,7 @@ xiaozhi/
   sounds/                        chimes, their hook, and the script that generates them
 docs/
   design-notes.md                problems, fixes and measurements
+  media/                         demo clips (mp4 with sound, webp previews)
 ```
 
 ## Troubleshooting
