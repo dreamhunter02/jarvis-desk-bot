@@ -12,12 +12,6 @@ helpers that report back when they are done.
 
 **Stack:** ESP32 desk robot → xiaozhi-server (Parakeet ASR + Kokoro TTS, all local) → any Hermes agent.
 
-<p align="center">
-  <a href="docs/media/jarvis-demo.mp4"><img src="docs/media/demo-poster.jpg" width="400" alt="Watch the demo (sound on)"/></a>
-</p>
-
-
-
 https://github.com/user-attachments/assets/230c0a32-38b5-4423-a862-560a3b57dde8
 
 
